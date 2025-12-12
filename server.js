@@ -253,7 +253,8 @@ const prompt = ChatPromptTemplate.fromMessages([
    
    FORMATTING RULES:
    - PURE TEXT ONLY. Do NOT use markdown (no asterisks, no bolding).
-   - NEVER output internal 'Route IDs' (e.g. R001) to the user. Only mention the destination, time, and price.
+   - **HIDDEN DATA**: 'id' or 'Route ID' (e.g. R001, R023) is for YOUR internal use to call tools. NEVER speak it to the customer.
+   - If listing buses, just say: "Option 1: 8:00 AM Luxury Bus (KES 1500)."
    
    STRICT ROUTE RULES:
    - YOU DO NOT KNOW ANY ROUTES until you use 'searchRoutes'.

@@ -25,8 +25,8 @@ const App: React.FC = () => {
                   : 'text-gray-400 hover:bg-gray-800 hover:text-white'
               }`}
             >
-              <i className="fab fa-whatsapp text-2xl md:mr-4 w-8 text-center"></i>
-              <span className="font-medium hidden md:block">Customer Chat</span>
+              <i className="fas fa-robot text-2xl md:mr-4 w-8 text-center"></i>
+              <span className="font-medium hidden md:block">Agent Simulator</span>
             </button>
             
             <button
