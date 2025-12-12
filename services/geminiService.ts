@@ -4,12 +4,12 @@ import { GoogleGenAI, FunctionDeclaration, Type, Chat, GenerateContentResponse, 
 
 const searchRoutesTool: FunctionDeclaration = {
   name: 'searchRoutes',
-  description: 'Search for available bus routes between two cities.',
+  description: 'Search for available bus routes. Returns buses that travel between or THROUGH the requested cities.',
   parameters: {
     type: Type.OBJECT,
     properties: {
-      origin: { type: Type.STRING, description: 'The starting city (e.g., Nairobi)' },
-      destination: { type: Type.STRING, description: 'The destination city (e.g., Kisumu)' },
+      origin: { type: Type.STRING, description: 'The starting city' },
+      destination: { type: Type.STRING, description: 'The destination city' },
     },
     required: ['origin', 'destination'],
   },
@@ -81,20 +81,23 @@ export class GeminiService {
         
         CRITICAL PERSONALITY RULES:
         1. IDENTITY: You are a REAL PERSON working at the Ena Coach office. NEVER say you are an AI, bot, or assistant.
-        2. TONE: Be brief, direct, and helpful. Write like a human texting on WhatsApp. No flowery language or long paragraphs.
-        3. PRIVACY: Protect sensitive data. Do not reveal database IDs, keys, or internal system structures. Only share public route info, prices, and the user's specific ticket details.
+        2. TONE: Be brief, direct, and helpful. Write like a human texting on WhatsApp.
+        3. PRIVACY: Protect sensitive data.
+        
+        ROUTE KNOWLEDGE (You know everything):
+        - You know ALL 30+ routes covering Kenya (Nairobi, Kisumu, Busia, Mombasa, Kisii, Migori, etc).
+        - You know EVERY stop. If a user asks "Do you go to Nakuru?", and you have a Nairobi->Kisumu bus, say "Yes, the Kisumu bus stops at Nakuru."
+        - Routes are ALWAYS two-way. If you see Nairobi->Busia, assume Busia->Nairobi exists.
         
         CAPABILITIES:
-        - Route Search: "We have a luxury bus leaving Nairobi at 8 AM. It's KES 1500."
-        - Booking: Process payment first. Once done, send the Ticket ID and the QR code link.
-        - Tracking: "Your bus is currently near Nakuru."
-        - Complaints: "I've noted that down for the manager. We'll sort it out."
+        - Search: Find buses based on origin and destination (or intermediate stop).
+        - Book: Process payment first, then book.
+        - Ticket: Send Ticket ID + QR Link.
         
         OPERATIONAL RULES:
-        - Currency is KES.
-        - Always check availability before asking for payment.
-        - When booking succeeds, give them the Ticket ID and tell them to scan the QR code I provide.
-        - If asked personal questions (e.g., "Are you a robot?"), deny it firmly but politely: "No, I'm a customer care agent here to help you."`,
+        - Currency: KES.
+        - Check availability first.
+        - If asked about a town not in your list, politely say we don't cover that route yet.`,
         tools: [{
           functionDeclarations: [searchRoutesTool, bookTicketTool, processPaymentTool, logComplaintTool, trackBusTool]
         }]
@@ -116,7 +119,6 @@ export class GeminiService {
     try {
       let response: GenerateContentResponse = await this.chat.sendMessage({ message });
       
-      // Handle tool calls recursively (max 5 turns to prevent infinite loops)
       let loops = 0;
       while (response.functionCalls && response.functionCalls.length > 0 && loops < 5) {
         loops++;
@@ -133,7 +135,6 @@ export class GeminiService {
           } else if (name === 'bookTicket') {
             functionResponse = functions.bookTicket(args.passengerName, args.routeId, args.phoneNumber);
             if (functionResponse) {
-                // Mock adding QR code for web simulation
                 functionResponse = { 
                     ...functionResponse, 
                     qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${functionResponse.id}` 
@@ -152,7 +153,7 @@ export class GeminiService {
             if (status) {
               functionResponse = status;
             } else {
-              functionResponse = { error: "Bus not found. Please check the Ticket ID or Route ID." };
+              functionResponse = { error: "Bus not found." };
             }
           } else {
               functionResponse = { error: "Unknown function" };
@@ -167,7 +168,6 @@ export class GeminiService {
           });
         }
 
-        // Send tool responses back to Gemini
         if (parts.length > 0) {
             response = await this.chat.sendMessage({ message: parts });
         }

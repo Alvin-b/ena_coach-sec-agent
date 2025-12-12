@@ -7,6 +7,7 @@ export interface BusRoute {
   availableSeats: number;
   capacity: number;
   busType: 'Luxury' | 'Standard';
+  stops: string[]; // List of major towns along the route
 }
 
 export interface Ticket {

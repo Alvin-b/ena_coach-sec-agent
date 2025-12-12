@@ -1,20 +1,27 @@
 /**
- * Ena Coach AI Agent - LangChain Webhook Handler
+ * Ena Coach AI Agent - Unified Server
+ * Handles both the WhatsApp Webhook and serving the React Frontend.
  */
 
 import express from 'express';
 import bodyParser from 'body-parser';
 import { createClient } from '@supabase/supabase-js';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 // LangChain Imports
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { AgentExecutor, createToolCallingAgent } from "langchain/agents";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
-import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
+import { ChatPromptTemplate } from "@langchain/core/prompts";
 
 // --- Configuration ---
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3000;
+
+// API Keys
 const API_KEY = process.env.GEMINI_API_KEY;
 const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL ? process.env.EVOLUTION_API_URL.replace(/\/$/, '') : '';
 const EVOLUTION_API_TOKEN = process.env.EVOLUTION_API_TOKEN;
@@ -31,10 +38,11 @@ const DARAJA_PASSKEY = process.env.DARAJA_PASSKEY;
 const DARAJA_SHORTCODE = process.env.DARAJA_SHORTCODE || '174379'; 
 const DARAJA_ENV = 'sandbox'; 
 
-// --- Initialize Services ---
+// --- Initialize App ---
 const app = express();
 app.use(bodyParser.json());
 
+// --- Database Setup ---
 let supabase = null;
 if (SUPABASE_URL && SUPABASE_KEY) {
   supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -43,8 +51,7 @@ if (SUPABASE_URL && SUPABASE_KEY) {
   console.warn("⚠️ Supabase credentials missing. Using INTERNAL DATA FALLBACK.");
 }
 
-// --- HARDCODED DATA (For robustness when DB is offline) ---
-// This ensures the agent KNOWS all routes even without Supabase
+// --- INTERNAL DATA (Fallback) ---
 const INTERNAL_ROUTES = [
   { id: 'R001', origin: 'Nairobi', destination: 'Kisumu', departureTime: '08:00 AM', price: 1500, stops: ['Naivasha', 'Nakuru', 'Kericho', 'Ahero'] },
   { id: 'R002', origin: 'Kisumu', destination: 'Nairobi', departureTime: '08:00 AM', price: 1500, stops: ['Ahero', 'Kericho', 'Nakuru', 'Naivasha'] },
@@ -78,7 +85,7 @@ const INTERNAL_ROUTES = [
   { id: 'R030', origin: 'Mbita', destination: 'Nairobi', departureTime: '08:00 PM', price: 1400, stops: ['Homabay', 'Narok'] },
 ];
 
-// --- Daraja Helper Functions ---
+// --- Daraja Helpers ---
 async function getDarajaToken() {
   if (!DARAJA_CONSUMER_KEY || !DARAJA_CONSUMER_SECRET) return null;
   const url = DARAJA_ENV === 'sandbox' 
@@ -95,81 +102,98 @@ async function getDarajaToken() {
 async function triggerSTKPush(phoneNumber, amount) {
   const token = await getDarajaToken();
   if (!token) return { success: false, message: "Payment service unavailable." };
-  // ... (Standard STK Push Logic as before)
-  return { success: true, message: "STK Push sent. Check phone." };
+  
+  const date = new Date();
+  const timestamp = date.getFullYear() +
+    ("0" + (date.getMonth() + 1)).slice(-2) +
+    ("0" + date.getDate()).slice(-2) +
+    ("0" + date.getHours()).slice(-2) +
+    ("0" + date.getMinutes()).slice(-2) +
+    ("0" + date.getSeconds()).slice(-2);
+
+  const password = Buffer.from(`${DARAJA_SHORTCODE}${DARAJA_PASSKEY}${timestamp}`).toString('base64');
+  const url = DARAJA_ENV === 'sandbox'
+    ? 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest'
+    : 'https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
+
+  let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
+  const payload = {
+    "BusinessShortCode": DARAJA_SHORTCODE,
+    "Password": password,
+    "Timestamp": timestamp,
+    "TransactionType": "CustomerPayBillOnline",
+    "Amount": Math.ceil(amount),
+    "PartyA": formattedPhone,
+    "PartyB": DARAJA_SHORTCODE,
+    "PhoneNumber": formattedPhone,
+    "CallBackURL": `https://example.com/callback`, 
+    "AccountReference": "EnaCoach",
+    "TransactionDesc": "Bus Ticket"
+  };
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    return data.ResponseCode === "0" 
+      ? { success: true, message: "STK Push sent. Check phone." } 
+      : { success: false, message: `Payment failed: ${data.errorMessage || 'Error'}` };
+  } catch (error) { return { success: false, message: "Network error." }; }
 }
 
 // --- LangChain Tools ---
-
 const searchRoutesTool = new DynamicStructuredTool({
   name: "searchRoutes",
-  description: "Search for available bus routes. Aware of intermediate stops and towns.",
+  description: "Search for available bus routes. Aware of intermediate stops.",
   schema: z.object({
     origin: z.string().describe("Starting city"),
     destination: z.string().describe("Destination city"),
   }),
   func: async ({ origin, destination }) => {
-    // 1. Try Supabase first
+    let matches = [];
     if (supabase) {
-      const { data, error } = await supabase.from('routes').select('*');
-      if (!error && data && data.length > 0) {
-        // Simple client-side filtering of DB results for stops
-        const matches = data.filter(r => {
-             const routeTxt = JSON.stringify(r).toLowerCase();
-             return routeTxt.includes(origin.toLowerCase()) && routeTxt.includes(destination.toLowerCase());
-        });
-        return JSON.stringify(matches);
-      }
+      const { data } = await supabase.from('routes').select('*');
+      if (data) matches = data;
     }
+    if (matches.length === 0) matches = INTERNAL_ROUTES;
+
+    // Filter Logic
+    const qOrigin = origin.toLowerCase();
+    const qDest = destination.toLowerCase();
     
-    // 2. Fallback to Internal Knowledge Base
-    const matches = INTERNAL_ROUTES.filter(r => {
+    matches = matches.filter(r => {
       const rOrigin = r.origin.toLowerCase();
       const rDest = r.destination.toLowerCase();
-      const rStops = r.stops.map(s => s.toLowerCase());
-      const qOrigin = origin.toLowerCase();
-      const qDest = destination.toLowerCase();
+      const rStops = (r.stops || []).map(s => s.toLowerCase());
 
-      // Direct Match
-      if (rOrigin.includes(qOrigin) && rDest.includes(qDest)) return true;
-
-      // Stop Match (e.g. Nairobi -> Nakuru)
-      // If the user asks for a stop that is on the route
-      if (rOrigin.includes(qOrigin) && rStops.includes(qDest)) return true;
-
-      // Advanced: Stop to Stop? (Not strictly implemented for brevity, but stops are visible)
+      // Direct or Stop logic
+      if (rOrigin.includes(qOrigin) && (rDest.includes(qDest) || rStops.includes(qDest))) return true;
       return false;
     });
 
-    if (matches.length === 0) return "No direct bus found. We might cover this via connecting routes, please check with the office.";
-    
-    // Format output nicely for the LLM
+    if (matches.length === 0) return "No direct bus found. Please check with the office.";
     return JSON.stringify(matches.map(m => ({
         ...m,
-        note: `This bus travels from ${m.origin} to ${m.destination}. It stops at: ${m.stops.join(', ')}.`
+        note: `Travels from ${m.origin} to ${m.destination}. Stops: ${(m.stops || []).join(', ')}.`
     })));
   },
 });
-
-// ... (Other tools: companyKnowledge, processPayment, bookTicket, logComplaint remain similar)
-// ... (Use INTERNAL_ROUTES logic in bookTicket if supabase is null)
 
 const companyKnowledgeTool = new DynamicStructuredTool({
     name: "companyKnowledge",
     description: "Company policies.",
     schema: z.object({ query: z.string() }),
-    func: async ({ query }) => {
-        return "Refunds: 48hrs (10% fee). Parcels: Available. Luggage: 20kg free.";
-    }
+    func: async ({ query }) => "Refunds: 48hrs (10% fee). Parcels: Available. Luggage: 20kg free."
 });
 
 const processPaymentTool = new DynamicStructuredTool({
   name: "processPayment",
   description: "Initiate M-Pesa STK Push.",
   schema: z.object({ phoneNumber: z.string(), amount: z.number() }),
-  func: async ({ phoneNumber, amount }) => {
-    return JSON.stringify(await triggerSTKPush(phoneNumber, amount));
-  },
+  func: async ({ phoneNumber, amount }) => JSON.stringify(await triggerSTKPush(phoneNumber, amount)),
 });
 
 const bookTicketTool = new DynamicStructuredTool({
@@ -192,7 +216,7 @@ const logComplaintTool = new DynamicStructuredTool({
 
 const tools = [searchRoutesTool, companyKnowledgeTool, processPaymentTool, bookTicketTool, logComplaintTool];
 
-// --- LangChain Agent Setup ---
+// --- AI Agent ---
 const llm = new ChatGoogleGenerativeAI({
   model: "gemini-2.5-flash",
   apiKey: API_KEY || "dummy", 
@@ -216,12 +240,14 @@ const prompt = ChatPromptTemplate.fromMessages([
    
    Currency: KES.`],
   ["human", "{input}"],
-  ["placeholder", "{agent_scratchpad}"],
 ]);
 
 const agent = createToolCallingAgent({ llm, tools, prompt });
 const agentExecutor = new AgentExecutor({ agent, tools, verbose: true });
 
+// --- Routes ---
+
+// 1. Webhook for Evolution API
 app.post('/webhook', (req, res) => {
   res.status(200).send('OK');
   handleIncomingMessage(req.body).catch(err => console.error(err));
@@ -234,6 +260,7 @@ async function handleIncomingMessage(payload) {
   const text = message.conversation || message.extendedTextMessage?.text;
   if (!text) return;
   
+  console.log(`[WhatsApp] ${text}`);
   try {
     const result = await agentExecutor.invoke({ input: text });
     await sendWhatsAppMessage(key.remoteJid, result.output);
@@ -252,4 +279,14 @@ async function sendWhatsAppMessage(remoteJid, text) {
   } catch(e) { console.error(e); }
 }
 
+// 2. Serve Static Frontend (Admin Dashboard)
+app.use(express.static(path.join(__dirname, 'dist')));
+
+// 3. Fallback for SPA (Single Page Application)
+app.get('*', (req, res) => {
+  if (req.path.startsWith('/webhook')) return res.status(404).send('Not found');
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
+// --- Start Server ---
 app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
