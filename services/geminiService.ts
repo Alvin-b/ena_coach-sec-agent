@@ -104,6 +104,10 @@ export class GeminiService {
         - DO NOT wait for the user.
         - The flow is: Process Payment -> (Success) -> Book Ticket -> Show Ticket.
 
+        LOCATION:
+        - If a user asks "Where is the bus?" or "Status", use 'trackBus'.
+        - You will be provided the Current Date/Time in every message. Use it to check if a bus has already departed.
+
         COMPLAINTS:
         - Sympathize first.
         - Ask for Route and Date.
@@ -131,7 +135,12 @@ export class GeminiService {
     }
   ): Promise<{ text: string, ticket?: Ticket }> {
     try {
-      let response: GenerateContentResponse = await this.chat.sendMessage({ message });
+      // Inject current time context into the message invisibly to the user interface logic, 
+      // but visible to the model.
+      const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
+      const contextualMessage = `[SYSTEM CONTEXT: Current Date & Time is ${now}]\nUser: ${message}`;
+
+      let response: GenerateContentResponse = await this.chat.sendMessage({ message: contextualMessage });
       let bookedTicket: Ticket | undefined;
       
       let loops = 0;
@@ -171,7 +180,8 @@ export class GeminiService {
             const complaintId = functions.logComplaint(args.customerName, args.issue, args.severity);
             functionResponse = { complaintId, status: 'logged' };
           } else if (name === 'trackBus') {
-            const status = functions.getBusStatus(args.query);
+            // AWAIT IS CRITICAL HERE for real fetch
+            const status = await functions.getBusStatus(args.query);
             if (status) {
               functionResponse = status;
             } else {

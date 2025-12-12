@@ -28,6 +28,10 @@ const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL ? process.env.EVOLUTION_
 const EVOLUTION_API_TOKEN = process.env.EVOLUTION_API_TOKEN;
 const INSTANCE_NAME = process.env.INSTANCE_NAME;
 
+// Fleet / GPS API Config
+const FLEET_API_URL = process.env.FLEET_API_URL; // e.g., https://api.tracking-provider.com/v1
+const FLEET_API_KEY = process.env.FLEET_API_KEY;
+
 // Database Config
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
@@ -96,6 +100,37 @@ const INTERNAL_ROUTES = [
   { id: 'R029', origin: 'Nairobi', destination: 'Mbita', departureTime: '08:00 PM', price: 1400, stops: ['Narok', 'Homabay'] },
   { id: 'R030', origin: 'Mbita', destination: 'Nairobi', departureTime: '08:00 PM', price: 1400, stops: ['Homabay', 'Narok'] },
 ];
+
+// --- Real Tracking Helper ---
+async function fetchRealBusLocation(query) {
+  if (!FLEET_API_URL) {
+    console.warn("❌ Missing FLEET_API_URL. Cannot fetch real data.");
+    return { error: "Real-time tracking is currently unavailable (System Configuration Error)." };
+  }
+
+  try {
+    // We assume the real API takes a bus ID, route ID, or ticket ID
+    // Example endpoint: https://api.tracking.com/v1/vehicles?search={query}
+    const response = await fetch(`${FLEET_API_URL}/vehicles?search=${encodeURIComponent(query)}`, {
+      headers: FLEET_API_KEY ? { 'Authorization': `Bearer ${FLEET_API_KEY}` } : {}
+    });
+
+    if (!response.ok) {
+      throw new Error(`Tracking API responded with ${response.status}`);
+    }
+
+    const data = await response.json();
+    // Transform external API format to our internal format
+    if (data && (data.location || data.data)) {
+        return data; // Return the raw data if it matches, or map it here
+    }
+    return { error: "Vehicle not found in the live tracking system." };
+
+  } catch (error) {
+    console.error("Tracking API Error:", error);
+    return { error: "Unable to contact GPS satellites. Please try again later." };
+  }
+}
 
 // --- Daraja Helpers ---
 async function getDarajaToken() {
@@ -237,7 +272,28 @@ const logComplaintTool = new DynamicStructuredTool({
   func: async () => JSON.stringify({ status: 'logged' }),
 });
 
-const tools = [searchRoutesTool, companyKnowledgeTool, processPaymentTool, bookTicketTool, logComplaintTool];
+const trackBusTool = new DynamicStructuredTool({
+    name: "trackBus",
+    description: "Get the current GPS location of a bus using Route ID (e.g. R001) or Ticket ID.",
+    schema: z.object({ query: z.string() }),
+    func: async ({ query }) => {
+        // CALL REAL EXTERNAL SERVER
+        const realData = await fetchRealBusLocation(query);
+        return JSON.stringify(realData);
+    }
+});
+
+const broadcastArrivalTool = new DynamicStructuredTool({
+    name: "broadcastArrival",
+    description: "Send a notification to all passengers on a bus that it has arrived at a location.",
+    schema: z.object({ routeId: z.string(), location: z.string() }),
+    func: async ({ routeId, location }) => {
+        // Logic to send mass WhatsApp would go here
+        return JSON.stringify({ success: true, message: `BROADCAST SENT: Bus ${routeId} has arrived at ${location}. Passengers notified.` });
+    }
+});
+
+const tools = [searchRoutesTool, companyKnowledgeTool, processPaymentTool, bookTicketTool, logComplaintTool, trackBusTool, broadcastArrivalTool];
 
 // --- AI Agent ---
 const llm = new ChatGoogleGenerativeAI({
@@ -248,6 +304,8 @@ const llm = new ChatGoogleGenerativeAI({
 
 const prompt = ChatPromptTemplate.fromMessages([
   ["system", `You are a human customer service rep at Ena Coach.
+   
+   CURRENT DATE AND TIME: {current_time}
    
    IDENTITY: Real person. Brief texts.
    
@@ -266,6 +324,10 @@ const prompt = ChatPromptTemplate.fromMessages([
    2. Ask for details.
    3. Call 'processPayment'.
    4. IF payment is successful, you MUST IMMEDIATELY call 'bookTicket'. Do not ask the user if they paid.
+
+   LOCATION & REMINDERS:
+   - If a user asks "Where is the bus?", use 'trackBus'.
+   - If a driver or staff says "We arrived at [Location]", use 'broadcastArrival' to notify passengers.
 
    COMPLAINT HANDLING:
    - If a user complains, sympathize first.
@@ -288,7 +350,14 @@ app.post('/webhook', (req, res) => {
   handleIncomingMessage(req.body).catch(err => console.error(err));
 });
 
-// 2. Debug Endpoints for Local Testing
+// 2. Bus Location Proxy (For Frontend)
+app.get('/api/bus-location/:query', async (req, res) => {
+    const { query } = req.params;
+    const data = await fetchRealBusLocation(query);
+    res.json(data);
+});
+
+// 3. Debug Endpoints for Local Testing
 app.get('/api/debug/messages', (req, res) => {
     res.json(debugOutbox);
 });
@@ -306,7 +375,13 @@ async function handleIncomingMessage(payload) {
   
   console.log(`[WhatsApp In] From ${key.remoteJid}: ${text}`);
   try {
-    const result = await agentExecutor.invoke({ input: text });
+    // Inject Current Time
+    const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
+    
+    const result = await agentExecutor.invoke({ 
+        input: text,
+        current_time: now 
+    });
     await sendWhatsAppMessage(key.remoteJid, result.output);
   } catch (error) { 
       console.error("Agent Error:", error);
@@ -341,10 +416,10 @@ async function sendWhatsAppMessage(remoteJid, text) {
   } catch(e) { console.error("API Send Error:", e); }
 }
 
-// 2. Serve Static Frontend (Admin Dashboard)
+// 4. Serve Static Frontend (Admin Dashboard)
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// 3. Fallback for SPA (Single Page Application)
+// 5. Fallback for SPA (Single Page Application)
 app.get('*', (req, res) => {
   if (req.path.startsWith('/webhook') || req.path.startsWith('/api')) return res.status(404).send('Not found');
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));

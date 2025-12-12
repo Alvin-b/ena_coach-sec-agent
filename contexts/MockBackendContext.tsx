@@ -2,12 +2,6 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { BusRoute, Ticket, Complaint, User, BusLocation } from '../types';
 import { ALL_ROUTES } from '../data/enaRoutes';
 
-// Mock Locations for tracking
-const MOCK_LOCATIONS: Record<string, BusLocation> = {
-  'R001': { routeId: 'R001', currentLocation: 'Passing Naivasha', nextStop: 'Nakuru', estimatedArrival: '02:00 PM', status: 'On Time', coordinates: { lat: -0.717, lng: 36.431 } },
-  'R002': { routeId: 'R002', currentLocation: 'Departing Nairobi', nextStop: 'Limuru', estimatedArrival: '04:00 AM', status: 'Delayed', coordinates: { lat: -1.292, lng: 36.821 } },
-};
-
 export interface WhatsAppConfigData {
   apiUrl: string;
   apiToken: string;
@@ -38,7 +32,7 @@ interface MockBackendContextType {
   getUserTickets: () => Ticket[];
 
   // Tracking
-  getBusStatus: (query: string) => BusLocation | null; 
+  getBusStatus: (query: string) => Promise<any | null>; // Changed to Promise and any to handle API response
   
   // Config
   saveWhatsAppConfig: (config: WhatsAppConfigData) => void;
@@ -72,17 +66,12 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (routeOrigin.includes(termOrigin) && routeDest.includes(termDest)) return true;
 
       // 2. Intermediate Stop Match (Smart Search)
-      // E.g. User wants Nairobi -> Nakuru. 
-      // Route is Nairobi -> Busia (stops at Nakuru).
-      
       const isOriginStart = routeOrigin.includes(termOrigin);
       const isDestStop = stops.includes(termDest);
       
       if (isOriginStart && isDestStop) return true;
 
       // 3. Stop to Stop (Advanced)
-      // E.g. Nakuru -> Eldoret (on Nairobi -> Busia route)
-      // We check if both are in stops and index(Origin) < index(Dest)
       if (stops.includes(termOrigin) && stops.includes(termDest)) {
          const idxOrigin = stops.indexOf(termOrigin);
          const idxDest = stops.indexOf(termDest);
@@ -190,11 +179,25 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const logout = () => setCurrentUser(null);
   const getUserTickets = () => currentUser ? tickets.filter(t => t.userId === currentUser.id) : [];
 
-  const getBusStatus = (query: string): BusLocation | null => {
+  const getBusStatus = async (query: string): Promise<any | null> => {
+    // If ticket ID, resolve to route ID if possible
+    let search = query;
     const ticket = tickets.find(t => t.id === query);
-    if (ticket) return MOCK_LOCATIONS[ticket.routeId] || null;
-    if (MOCK_LOCATIONS[query]) return MOCK_LOCATIONS[query];
-    return null;
+    if (ticket) {
+        search = ticket.routeId;
+    }
+
+    try {
+        // We call our own server, which will then call the real FLEET_API
+        const response = await fetch(`/api/bus-location/${encodeURIComponent(search)}`);
+        if (response.ok) {
+            return await response.json();
+        }
+        return { error: 'Failed to fetch real data' };
+    } catch (e) {
+        console.error("GPS Fetch Error:", e);
+        return null;
+    }
   };
 
   const saveWhatsAppConfig = (config: WhatsAppConfigData) => setWhatsappConfig(config);
