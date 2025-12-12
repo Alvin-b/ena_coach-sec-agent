@@ -101,7 +101,7 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const processPayment = async (phoneNumber: string, amount: number): Promise<boolean> => {
     console.log(`[Daraja Mock] STK Push sent to ${phoneNumber} for KES ${amount}`);
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    return Math.random() > 0.1;
+    return true; // Always succeed for testing purposes
   };
 
   const bookTicket = (passengerName: string, routeId: string, phoneNumber: string) => {

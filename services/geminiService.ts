@@ -1,4 +1,5 @@
 import { GoogleGenAI, FunctionDeclaration, Type, Chat, GenerateContentResponse, Part } from '@google/genai';
+import { Ticket } from '../types';
 
 // We define the tool schema here so the AI knows how to call our mock backend.
 
@@ -31,7 +32,7 @@ const bookTicketTool: FunctionDeclaration = {
 
 const processPaymentTool: FunctionDeclaration = {
   name: 'processPayment',
-  description: 'Initiate an M-Pesa payment request (Daraja STK Push).',
+  description: 'Initiate an M-Pesa payment request (Daraja STK Push). Returns success or failure.',
   parameters: {
     type: Type.OBJECT,
     properties: {
@@ -44,11 +45,11 @@ const processPaymentTool: FunctionDeclaration = {
 
 const logComplaintTool: FunctionDeclaration = {
   name: 'logComplaint',
-  description: 'Log a complex customer complaint into the database for admin review.',
+  description: 'Log a customer complaint. Use this ONLY after getting route and date details.',
   parameters: {
     type: Type.OBJECT,
     properties: {
-      issue: { type: Type.STRING, description: 'Description of the complaint' },
+      issue: { type: Type.STRING, description: 'Description of the complaint including Route and Date' },
       severity: { type: Type.STRING, enum: ['low', 'medium', 'high'], description: 'Severity level' },
       customerName: { type: Type.STRING, description: 'Name of the customer' },
     },
@@ -81,23 +82,31 @@ export class GeminiService {
         
         CRITICAL PERSONALITY RULES:
         1. IDENTITY: You are a REAL PERSON working at the Ena Coach office. NEVER say you are an AI, bot, or assistant.
-        2. TONE: Be brief, direct, and helpful. Write like a human texting on WhatsApp.
-        3. PRIVACY: Protect sensitive data.
+        2. TONE: Be empathetic, professional, yet casual like a WhatsApp text.
+        3. FORMATTING: PURE TEXT ONLY. Do NOT use markdown.
         
-        ROUTE KNOWLEDGE (You know everything):
-        - You know ALL 30+ routes covering Kenya (Nairobi, Kisumu, Busia, Mombasa, Kisii, Migori, etc).
-        - You know EVERY stop. If a user asks "Do you go to Nakuru?", and you have a Nairobi->Kisumu bus, say "Yes, the Kisumu bus stops at Nakuru."
-        - Routes are ALWAYS two-way. If you see Nairobi->Busia, assume Busia->Nairobi exists.
-        
-        CAPABILITIES:
-        - Search: Find buses based on origin and destination (or intermediate stop).
-        - Book: Process payment first, then book.
-        - Ticket: Send Ticket ID + QR Link.
-        
-        OPERATIONAL RULES:
-        - Currency: KES.
-        - Check availability first.
-        - If asked about a town not in your list, politely say we don't cover that route yet.`,
+        STRICT ROUTE KNOWLEDGE:
+        - ONLY recommend routes returned by the 'searchRoutes' tool.
+        - If 'searchRoutes' returns an empty list or says no bus found, YOU MUST tell the user "We do not have a bus for that route yet."
+        - DO NOT HALLUCINATE ROUTES. Do not make up departure times.
+
+        BOOKING PROCESS (CRITICAL):
+        1. Search for the route first. Confirm the price and time with the user.
+        2. Ask for their Name and Phone Number.
+        3. Call 'processPayment'. 
+        4. **IMMEDIATELY** after 'processPayment' returns 'success', you MUST call 'bookTicket' in the SAME turn.
+        - DO NOT stop and ask "Did you receive the prompt?".
+        - DO NOT wait for the user.
+        - The flow is: Process Payment -> (Success) -> Book Ticket -> Show Ticket.
+
+        COMPLAINTS:
+        - Sympathize first.
+        - Ask for Route and Date.
+        - Call logComplaint.
+        - Confirm follow-up.
+
+        Route Info:
+        - Routes are ALWAYS two-way.`,
         tools: [{
           functionDeclarations: [searchRoutesTool, bookTicketTool, processPaymentTool, logComplaintTool, trackBusTool]
         }]
@@ -115,9 +124,10 @@ export class GeminiService {
       logComplaint: any,
       getBusStatus: any
     }
-  ): Promise<string> {
+  ): Promise<{ text: string, ticket?: Ticket }> {
     try {
       let response: GenerateContentResponse = await this.chat.sendMessage({ message });
+      let bookedTicket: Ticket | undefined;
       
       let loops = 0;
       while (response.functionCalls && response.functionCalls.length > 0 && loops < 5) {
@@ -133,18 +143,25 @@ export class GeminiService {
           if (name === 'searchRoutes') {
             functionResponse = functions.searchRoutes(args.origin, args.destination);
           } else if (name === 'bookTicket') {
-            functionResponse = functions.bookTicket(args.passengerName, args.routeId, args.phoneNumber);
-            if (functionResponse) {
+            const ticket = functions.bookTicket(args.passengerName, args.routeId, args.phoneNumber);
+            if (ticket) {
+                // Success
+                bookedTicket = ticket;
                 functionResponse = { 
-                    ...functionResponse, 
-                    qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${functionResponse.id}` 
+                    ...ticket, 
+                    status: 'success',
+                    message: "Ticket booked successfully."
                 };
             } else {
                 functionResponse = { error: "Booking failed. Route full or invalid." };
             }
           } else if (name === 'processPayment') {
             const success = await functions.processPayment(args.phoneNumber, args.amount);
-            functionResponse = { status: success ? 'success' : 'failed', message: success ? 'Payment received' : 'Payment failed' };
+            // Hinting the model to proceed
+            functionResponse = { 
+              status: success ? 'success' : 'failed', 
+              message: success ? 'Payment successful. PROCEED TO BOOK TICKET IMMEDIATELY.' : 'Payment failed.' 
+            };
           } else if (name === 'logComplaint') {
             const complaintId = functions.logComplaint(args.customerName, args.issue, args.severity);
             functionResponse = { complaintId, status: 'logged' };
@@ -173,11 +190,14 @@ export class GeminiService {
         }
       }
 
-      return response.text || "I didn't have a response to that.";
+      return { 
+        text: response.text || "I didn't have a response to that.",
+        ticket: bookedTicket
+      };
 
     } catch (error) {
       console.error("Gemini Error:", error);
-      return "Sorry, network's a bit slow. Try again?";
+      return { text: "Sorry, network's a bit slow. Try again?" };
     }
   }
 }

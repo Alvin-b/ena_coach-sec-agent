@@ -1,3 +1,4 @@
+
 export interface BusRoute {
   id: string;
   origin: string;
@@ -39,6 +40,7 @@ export interface ChatMessage {
   text: string;
   isToolOutput?: boolean;
   timestamp: Date;
+  ticket?: Ticket; // Added to support rich ticket rendering
 }
 
 export interface PaymentRequest {

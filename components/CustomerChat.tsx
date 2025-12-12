@@ -50,7 +50,7 @@ const CustomerChat: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const responseText = await gemini.sendMessage(input, {
+      const { text, ticket } = await gemini.sendMessage(input, {
         searchRoutes,
         bookTicket,
         processPayment,
@@ -61,8 +61,9 @@ const CustomerChat: React.FC = () => {
       const aiMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: 'model',
-        text: responseText,
+        text: text,
         timestamp: new Date(),
+        ticket: ticket // Attach the ticket object if booked
       };
       setMessages((prev) => [...prev, aiMsg]);
     } catch (error) {
@@ -95,7 +96,7 @@ const CustomerChat: React.FC = () => {
       {/* Auth Modal Overlay */}
       {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
       
-      {/* Ticket Card Overlay */}
+      {/* Ticket Card Overlay (Full View) */}
       {selectedTicket && <TicketCard ticket={selectedTicket} onClose={() => setSelectedTicket(null)} />}
 
       {/* WhatsApp Header */}
@@ -188,6 +189,31 @@ const CustomerChat: React.FC = () => {
               }`}
             >
               <p className="whitespace-pre-wrap">{msg.text}</p>
+              
+              {/* Premium Ticket Bubble inside Chat */}
+              {msg.ticket && (
+                <div className="mt-3 bg-red-50 border border-red-100 rounded-lg p-3 shadow-inner">
+                  <div className="flex items-center space-x-3 mb-2">
+                    <div className="bg-red-600 text-white w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs">EC</div>
+                    <div>
+                      <h3 className="font-bold text-gray-800 text-xs uppercase tracking-wide">Ena Coach Ticket</h3>
+                      <p className="text-[10px] text-gray-500">{msg.ticket.id}</p>
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-700 mb-2 space-y-1">
+                    <p><strong>To:</strong> {msg.ticket.routeDetails?.destination}</p>
+                    <p><strong>Departs:</strong> {msg.ticket.routeDetails?.departureTime}</p>
+                    <p><strong>Seat:</strong> <span className="text-red-600 font-bold text-sm">{msg.ticket.seatNumber}</span></p>
+                  </div>
+                  <button 
+                    onClick={() => setSelectedTicket(msg.ticket!)}
+                    className="w-full bg-red-600 text-white py-1.5 rounded text-xs font-bold hover:bg-red-700 transition flex items-center justify-center"
+                  >
+                    <i className="fas fa-eye mr-2"></i> View & Download Ticket
+                  </button>
+                </div>
+              )}
+
               <span className="text-[10px] text-gray-500 block text-right mt-1">
                 {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </span>
