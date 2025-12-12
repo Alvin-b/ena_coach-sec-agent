@@ -20,11 +20,87 @@ const WhatsAppConfig: React.FC = () => {
   const [isSending, setIsSending] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
 
+  // Simulator State
+  const [simPhone, setSimPhone] = useState('254712345678');
+  const [simMessage, setSimMessage] = useState('Hi, do you have a bus to Kisumu?');
+  const [simLoading, setSimLoading] = useState(false);
+  const [debugMessages, setDebugMessages] = useState<any[]>([]);
+
   const addLog = (msg: string) => setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
+
+  useEffect(() => {
+      // Auto-detect current domain for convenience
+      if (typeof window !== 'undefined') {
+          setServerDomain(window.location.origin);
+      }
+
+      // Poll for debug messages
+      const interval = setInterval(fetchDebugMessages, 2000);
+      return () => clearInterval(interval);
+  }, []);
+
+  const fetchDebugMessages = async () => {
+      try {
+          const res = await fetch('/api/debug/messages');
+          if (res.ok) {
+              const data = await res.json();
+              setDebugMessages(data);
+          }
+      } catch (e) { /* Ignore errors in polling */ }
+  };
+
+  const handleClearDebug = async () => {
+      await fetch('/api/debug/clear', { method: 'POST' });
+      setDebugMessages([]);
+  };
 
   const handleSave = () => {
     saveWhatsAppConfig({ apiUrl, apiToken: apiKey, instanceName });
     addLog('Configuration saved.');
+  };
+
+  const handleSimulateWebhook = async () => {
+      if (!simMessage) return;
+      setSimLoading(true);
+      
+      // Construct exact Evolution API payload
+      const payload = {
+          type: "messages.upsert",
+          data: {
+              key: {
+                  remoteJid: simPhone.includes('@s.whatsapp.net') ? simPhone : `${simPhone}@s.whatsapp.net`,
+                  fromMe: false,
+                  id: "SIM-" + Date.now()
+              },
+              pushName: "Simulated User",
+              message: {
+                  conversation: simMessage
+              },
+              messageType: "conversation"
+          }
+      };
+
+      try {
+          const res = await fetch('/webhook', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+          });
+          
+          if (res.ok) {
+              addLog(`Webhook Simulator: Sent "${simMessage}"`);
+              setSimMessage(''); // Clear input
+              // Immediately fetch response to see if it was fast
+              setTimeout(fetchDebugMessages, 1000); 
+              setTimeout(fetchDebugMessages, 3000); 
+          } else {
+              addLog('Webhook Simulator: Failed to send payload.');
+          }
+      } catch (e) {
+          addLog(`Webhook Simulator Error: ${e}`);
+      } finally {
+          setSimLoading(false);
+      }
   };
 
   const handleTestConnection = async () => {
@@ -110,10 +186,73 @@ const WhatsAppConfig: React.FC = () => {
   // Construct the webhook URL based on user input
   const webhookUrl = serverDomain 
     ? `${serverDomain.replace(/\/$/, '')}/webhook` 
-    : 'https://[YOUR_SERVER_DOMAIN]/webhook';
+    : 'Waiting for server domain...';
 
   return (
     <div className="space-y-8">
+
+      {/* WEBHOOK SIMULATOR (Added for Testing) */}
+      <div className="bg-purple-50 p-6 rounded-lg shadow-sm border border-purple-200">
+         <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-bold text-purple-800 flex items-center">
+                <i className="fas fa-robot text-purple-600 mr-2"></i> Local Webhook Simulator
+            </h2>
+            <button onClick={handleClearDebug} className="text-xs text-purple-600 hover:text-purple-800 font-bold">Clear Logs</button>
+         </div>
+         <p className="text-sm text-purple-900 mb-4">
+            Test the agent's logic locally. Sending a message here mimics an incoming WhatsApp message to your server's <code>/webhook</code> endpoint.
+         </p>
+
+         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+             <div className="space-y-3">
+                 <div>
+                     <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Simulated Customer Phone</label>
+                     <input 
+                        type="text" 
+                        value={simPhone} 
+                        onChange={(e) => setSimPhone(e.target.value)}
+                        className="w-full border p-2 rounded text-sm outline-none focus:border-purple-500"
+                     />
+                 </div>
+                 <div>
+                     <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Message Body</label>
+                     <textarea 
+                        value={simMessage} 
+                        onChange={(e) => setSimMessage(e.target.value)}
+                        className="w-full border p-2 rounded text-sm outline-none focus:border-purple-500 h-20 resize-none"
+                     ></textarea>
+                 </div>
+                 <button 
+                    onClick={handleSimulateWebhook}
+                    disabled={simLoading || !simMessage}
+                    className={`w-full py-2 rounded text-white font-bold transition ${
+                        simLoading ? 'bg-purple-300' : 'bg-purple-600 hover:bg-purple-700'
+                    }`}
+                 >
+                    {simLoading ? 'Processing...' : 'Send Payload to /webhook'}
+                 </button>
+             </div>
+
+             <div className="bg-gray-900 rounded-lg p-3 flex flex-col h-64">
+                 <div className="text-xs text-gray-400 border-b border-gray-700 pb-2 mb-2">Agent Responses (Server Output)</div>
+                 <div className="flex-1 overflow-y-auto space-y-2">
+                     {debugMessages.length === 0 ? (
+                         <div className="text-gray-600 text-xs italic text-center mt-10">No messages yet. Try sending one!</div>
+                     ) : (
+                         debugMessages.map((msg: any, idx) => (
+                             <div key={idx} className="bg-gray-800 p-2 rounded border-l-2 border-green-500">
+                                 <div className="flex justify-between text-[10px] text-gray-400 mb-1">
+                                     <span>To: {msg.to}</span>
+                                     <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                                 </div>
+                                 <div className="text-sm text-white whitespace-pre-wrap">{msg.text}</div>
+                             </div>
+                         ))
+                     )}
+                 </div>
+             </div>
+         </div>
+      </div>
       
       {/* 1. Webhook Setup (Priority 1) */}
       <div className="bg-yellow-50 p-6 rounded-lg shadow-sm border border-yellow-200">
@@ -125,17 +264,22 @@ const WhatsAppConfig: React.FC = () => {
             Evolution API needs to know where to send incoming WhatsApp messages.
         </p>
 
+        <div className="bg-orange-100 border-l-4 border-orange-500 text-orange-700 p-4 mb-4 text-xs">
+           <p className="font-bold">⚠️ Important Note for Development:</p>
+           <p>If you are running this in a private development environment (like CodeSandbox, StackBlitz, or Localhost), external services like Evolution API <strong>cannot reach</strong> the URL below.</p>
+           <p className="mt-1">Use the <strong>Simulator</strong> above to test logic. To use real WhatsApp, please deploy to a public server (Railway, Heroku, etc).</p>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-                 <h3 className="font-bold text-sm text-yellow-800 mb-2">Step A: Deploy Server</h3>
+                 <h3 className="font-bold text-sm text-yellow-800 mb-2">Step A: Deployed Server URL</h3>
                  <div className="bg-white p-3 rounded border border-yellow-300">
-                     <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Enter Deployed Server Domain</label>
+                     <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Current Environment URL</label>
                      <input 
                         type="text" 
                         value={serverDomain} 
-                        onChange={(e) => setServerDomain(e.target.value)}
-                        className="w-full border p-2 rounded text-sm focus:border-yellow-500 outline-none font-mono"
-                        placeholder="e.g. https://ena-bot.onrender.com"
+                        readOnly
+                        className="w-full border p-2 rounded text-sm bg-gray-100 text-gray-600 font-mono"
                      />
                  </div>
                  
@@ -256,7 +400,7 @@ const WhatsAppConfig: React.FC = () => {
       <div className="flex flex-col md:flex-row gap-6">
         <div className="flex-1 bg-white p-6 rounded-lg shadow-sm border border-gray-200">
           <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center">
-            <i className="fas fa-paper-plane text-blue-500 mr-2"></i> 3. Send Test Message
+            <i className="fas fa-paper-plane text-blue-500 mr-2"></i> 3. Send Test Message (Real)
           </h2>
           <div className="space-y-4">
             <div>

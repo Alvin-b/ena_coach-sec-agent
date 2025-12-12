@@ -5,8 +5,20 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   define: {
-    // This allows the frontend simulation to access process.env.API_KEY if needed,
-    // though in production we should be careful with keys.
     'process.env': {} 
+  },
+  server: {
+    proxy: {
+      '/webhook': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/api': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+        secure: false,
+      }
+    }
   }
 });

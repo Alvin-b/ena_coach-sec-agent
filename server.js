@@ -3,6 +3,7 @@
  * Handles both the WhatsApp Webhook and serving the React Frontend.
  */
 
+import 'dotenv/config'; // Load environment variables locally
 import express from 'express';
 import bodyParser from 'body-parser';
 import { createClient } from '@supabase/supabase-js';
@@ -40,7 +41,18 @@ const DARAJA_ENV = 'sandbox';
 
 // --- Initialize App ---
 const app = express();
+
+// CORS Middleware for Local Dev
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+  next();
+});
+
 app.use(bodyParser.json());
+
+// --- Debug Store (For Local Testing) ---
+const debugOutbox = [];
 
 // --- Database Setup ---
 let supabase = null;
@@ -253,6 +265,15 @@ app.post('/webhook', (req, res) => {
   handleIncomingMessage(req.body).catch(err => console.error(err));
 });
 
+// 2. Debug Endpoints for Local Testing
+app.get('/api/debug/messages', (req, res) => {
+    res.json(debugOutbox);
+});
+app.post('/api/debug/clear', (req, res) => {
+    debugOutbox.length = 0;
+    res.send('ok');
+});
+
 async function handleIncomingMessage(payload) {
   if (payload.type !== 'messages.upsert') return;
   const { key, message } = payload.data;
@@ -260,15 +281,33 @@ async function handleIncomingMessage(payload) {
   const text = message.conversation || message.extendedTextMessage?.text;
   if (!text) return;
   
-  console.log(`[WhatsApp] ${text}`);
+  console.log(`[WhatsApp In] From ${key.remoteJid}: ${text}`);
   try {
     const result = await agentExecutor.invoke({ input: text });
     await sendWhatsAppMessage(key.remoteJid, result.output);
-  } catch (error) { console.error(error); }
+  } catch (error) { 
+      console.error("Agent Error:", error);
+      await sendWhatsAppMessage(key.remoteJid, "System busy. Try again.");
+  }
 }
 
 async function sendWhatsAppMessage(remoteJid, text) {
-  if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) return;
+  console.log(`[WhatsApp Out] To ${remoteJid}: ${text}`);
+  
+  // Store in debug outbox for local testing UI
+  debugOutbox.unshift({
+      id: Date.now().toString(),
+      to: remoteJid,
+      text: text,
+      timestamp: new Date()
+  });
+  if (debugOutbox.length > 50) debugOutbox.pop();
+
+  if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) {
+      console.log("⚠️ Evolution API not configured. Message stored in debug outbox only.");
+      return;
+  }
+
   const url = `${EVOLUTION_API_URL}/message/sendText/${INSTANCE_NAME}`;
   try {
     await fetch(url, {
@@ -276,7 +315,7 @@ async function sendWhatsAppMessage(remoteJid, text) {
         headers: { 'Content-Type': 'application/json', 'apikey': EVOLUTION_API_TOKEN },
         body: JSON.stringify({ number: remoteJid, text: text })
     });
-  } catch(e) { console.error(e); }
+  } catch(e) { console.error("API Send Error:", e); }
 }
 
 // 2. Serve Static Frontend (Admin Dashboard)
@@ -284,7 +323,7 @@ app.use(express.static(path.join(__dirname, 'dist')));
 
 // 3. Fallback for SPA (Single Page Application)
 app.get('*', (req, res) => {
-  if (req.path.startsWith('/webhook')) return res.status(404).send('Not found');
+  if (req.path.startsWith('/webhook') || req.path.startsWith('/api')) return res.status(404).send('Not found');
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
