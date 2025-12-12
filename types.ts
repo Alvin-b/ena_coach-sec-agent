@@ -5,6 +5,7 @@ export interface BusRoute {
   departureTime: string;
   price: number;
   availableSeats: number;
+  capacity: number;
   busType: 'Luxury' | 'Standard';
 }
 
@@ -14,10 +15,12 @@ export interface Ticket {
   routeId: string;
   seatNumber: number;
   status: 'booked' | 'cancelled';
+  boardingStatus: 'pending' | 'boarded';
   paymentId: string;
   bookingTime: string;
   userId?: string; // Linked to a registered user
   routeDetails?: BusRoute;
+  qrCodeUrl: string;
 }
 
 export interface Complaint {

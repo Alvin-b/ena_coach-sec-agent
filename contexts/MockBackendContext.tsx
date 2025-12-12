@@ -3,11 +3,11 @@ import { BusRoute, Ticket, Complaint, User, BusLocation } from '../types';
 
 // Initial Mock Data
 const INITIAL_ROUTES: BusRoute[] = [
-  { id: 'R001', origin: 'Nairobi', destination: 'Kisumu', departureTime: '08:00 AM', price: 1500, availableSeats: 24, busType: 'Luxury' },
-  { id: 'R002', origin: 'Nairobi', destination: 'Kisumu', departureTime: '09:00 PM', price: 1200, availableSeats: 10, busType: 'Standard' },
-  { id: 'R003', origin: 'Kisumu', destination: 'Nairobi', departureTime: '10:00 AM', price: 1500, availableSeats: 40, busType: 'Luxury' },
-  { id: 'R004', origin: 'Nairobi', destination: 'Mombasa', departureTime: '07:00 AM', price: 2000, availableSeats: 5, busType: 'Luxury' },
-  { id: 'R005', origin: 'Mombasa', destination: 'Nairobi', departureTime: '08:00 PM', price: 1800, availableSeats: 15, busType: 'Standard' },
+  { id: 'R001', origin: 'Nairobi', destination: 'Kisumu', departureTime: '08:00 AM', price: 1500, availableSeats: 24, capacity: 32, busType: 'Luxury' },
+  { id: 'R002', origin: 'Nairobi', destination: 'Kisumu', departureTime: '09:00 PM', price: 1200, availableSeats: 10, capacity: 45, busType: 'Standard' },
+  { id: 'R003', origin: 'Kisumu', destination: 'Nairobi', departureTime: '10:00 AM', price: 1500, availableSeats: 40, capacity: 45, busType: 'Luxury' },
+  { id: 'R004', origin: 'Nairobi', destination: 'Mombasa', departureTime: '07:00 AM', price: 2000, availableSeats: 5, capacity: 32, busType: 'Luxury' },
+  { id: 'R005', origin: 'Mombasa', destination: 'Nairobi', departureTime: '08:00 PM', price: 1800, availableSeats: 15, capacity: 45, busType: 'Standard' },
 ];
 
 const MOCK_LOCATIONS: Record<string, BusLocation> = {
@@ -37,6 +37,9 @@ interface MockBackendContextType {
   bookTicket: (passengerName: string, routeId: string, phoneNumber: string) => Ticket | null;
   logComplaint: (customerName: string, issue: string, severity: 'low' | 'medium' | 'high') => string;
   
+  // Admin Actions
+  validateTicket: (ticketId: string) => { success: boolean; message: string; ticket?: Ticket };
+
   // Auth
   login: (identifier: string, password: string) => Promise<boolean>;
   register: (name: string, email: string, phoneNumber: string, password: string) => Promise<boolean>;
@@ -99,21 +102,53 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
     updatedRoutes[routeIndex] = { ...route, availableSeats: route.availableSeats - 1 };
     setRoutes(updatedRoutes);
 
+    const ticketId = `TKT-${Math.floor(Math.random() * 10000)}`;
+    
     // Create ticket
     const newTicket: Ticket = {
-      id: `TKT-${Math.floor(Math.random() * 10000)}`,
+      id: ticketId,
       passengerName,
       routeId,
-      seatNumber: 45 - route.availableSeats + 1, // Simple seat logic
+      seatNumber: route.capacity - route.availableSeats + 1, // Simple seat logic
       status: 'booked',
+      boardingStatus: 'pending',
       paymentId: `PAY-${Math.floor(Math.random() * 100000)}`,
       bookingTime: new Date().toISOString(),
       routeDetails: route,
-      userId: currentUser?.id 
+      userId: currentUser?.id,
+      qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${ticketId}`
     };
 
     setTickets((prev) => [newTicket, ...prev]);
     return newTicket;
+  };
+
+  const validateTicket = (ticketId: string) => {
+    const ticket = tickets.find(t => t.id === ticketId);
+    
+    if (!ticket) {
+      return { success: false, message: 'Invalid Ticket ID: Not found in system.' };
+    }
+
+    if (ticket.status === 'cancelled') {
+      return { success: false, message: 'Ticket was cancelled.' };
+    }
+
+    if (ticket.boardingStatus === 'boarded') {
+      return { success: false, message: 'Warning: Ticket already used/scanned.' };
+    }
+
+    // Mark as used
+    const updatedTickets = tickets.map(t => 
+      t.id === ticketId ? { ...t, boardingStatus: 'boarded' as const } : t
+    );
+    setTickets(updatedTickets);
+
+    return { 
+      success: true, 
+      message: `Success! Welcome aboard, ${ticket.passengerName}. Seat #${ticket.seatNumber}.`,
+      ticket
+    };
   };
 
   const logComplaint = (customerName: string, issue: string, severity: 'low' | 'medium' | 'high') => {
@@ -191,6 +226,7 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
         processPayment,
         bookTicket,
         logComplaint,
+        validateTicket,
         login,
         register,
         logout,

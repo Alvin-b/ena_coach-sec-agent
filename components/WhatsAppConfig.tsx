@@ -110,14 +110,87 @@ const WhatsAppConfig: React.FC = () => {
   // Construct the webhook URL based on user input
   const webhookUrl = serverDomain 
     ? `${serverDomain.replace(/\/$/, '')}/webhook` 
-    : 'https://your-deployed-server.com/webhook';
+    : 'https://[YOUR_SERVER_DOMAIN]/webhook';
 
   return (
-    <div className="space-y-6">
-      {/* 1. Configuration Card */}
+    <div className="space-y-8">
+      
+      {/* 1. Webhook Setup (Priority 1) */}
+      <div className="bg-yellow-50 p-6 rounded-lg shadow-sm border border-yellow-200">
+        <h2 className="text-xl font-bold text-yellow-800 mb-4 flex items-center">
+            <i className="fas fa-satellite-dish text-yellow-600 mr-2"></i> 1. Server Deployment & Webhook
+        </h2>
+        
+        <p className="text-sm text-yellow-900 mb-4">
+            Evolution API needs to know where to send incoming WhatsApp messages.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+                 <h3 className="font-bold text-sm text-yellow-800 mb-2">Step A: Deploy Server</h3>
+                 <div className="bg-white p-3 rounded border border-yellow-300">
+                     <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Enter Deployed Server Domain</label>
+                     <input 
+                        type="text" 
+                        value={serverDomain} 
+                        onChange={(e) => setServerDomain(e.target.value)}
+                        className="w-full border p-2 rounded text-sm focus:border-yellow-500 outline-none font-mono"
+                        placeholder="e.g. https://ena-bot.onrender.com"
+                     />
+                 </div>
+                 
+                 <h3 className="font-bold text-sm text-yellow-800 mt-4 mb-2">Required Server Env Vars</h3>
+                 <div className="bg-gray-800 p-3 rounded text-xs text-green-400 font-mono overflow-x-auto">
+                    GEMINI_API_KEY=...<br/>
+                    EVOLUTION_API_URL=...<br/>
+                    EVOLUTION_API_TOKEN=...<br/>
+                    INSTANCE_NAME=...<br/>
+                    SUPABASE_URL=...<br/>
+                    SUPABASE_KEY=...<br/>
+                    <br/>
+                    <span className="text-yellow-400"># Daraja (M-Pesa) Config</span><br/>
+                    DARAJA_CONSUMER_KEY=...<br/>
+                    DARAJA_CONSUMER_SECRET=...<br/>
+                    DARAJA_PASSKEY=...<br/>
+                    DARAJA_SHORTCODE=174379
+                 </div>
+            </div>
+
+            <div>
+                 <h3 className="font-bold text-sm text-yellow-800 mb-2">Step B: Copy to Evolution API</h3>
+                 <p className="text-xs text-yellow-800 mb-2">
+                     Paste this exact URL into your Evolution API Instance settings.
+                 </p>
+                 <div className="bg-white p-3 rounded border border-yellow-300">
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Final Webhook URL</label>
+                    <div className="flex">
+                        <input 
+                            type="text" 
+                            readOnly 
+                            value={webhookUrl}
+                            className="w-full border p-2 rounded-l text-sm bg-gray-100 text-gray-800 font-bold font-mono"
+                        />
+                        <button 
+                            onClick={() => navigator.clipboard.writeText(webhookUrl)}
+                            className="bg-yellow-600 text-white px-4 py-2 rounded-r text-sm hover:bg-yellow-700 font-bold"
+                            title="Copy to Clipboard"
+                        >
+                            COPY
+                        </button>
+                    </div>
+                 </div>
+                 <p className="text-[10px] text-yellow-800 mt-2">
+                    <i className="fas fa-exclamation-triangle mr-1"></i> 
+                    Ensure <strong>MESSAGES_UPSERT</strong> event is enabled in Evolution API.
+                 </p>
+            </div>
+        </div>
+      </div>
+
+      {/* 2. Configuration Card */}
       <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
         <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center justify-between">
-          <span className="flex items-center"><i className="fab fa-whatsapp text-green-500 mr-2"></i> 1. Evolution API Connection</span>
+          <span className="flex items-center"><i className="fab fa-whatsapp text-green-500 mr-2"></i> 2. Evolution API Connection</span>
           <span className={`text-xs px-2 py-1 rounded border uppercase ${
             connectionStatus === 'connected' ? 'bg-green-100 text-green-700 border-green-200' : 
             connectionStatus === 'error' ? 'bg-red-100 text-red-700 border-red-200' : 'bg-gray-100 text-gray-500'
@@ -176,54 +249,6 @@ const WhatsAppConfig: React.FC = () => {
             {isTestingConnection ? <i className="fas fa-spinner fa-spin mr-2"></i> : <i className="fas fa-plug mr-2"></i>}
             Test Connection
           </button>
-        </div>
-      </div>
-
-      {/* 2. Webhook Setup (The URL Generator) */}
-      <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-        <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
-            <i className="fas fa-network-wired text-purple-600 mr-2"></i> 2. Webhook Setup
-        </h2>
-        <div className="bg-purple-50 p-4 rounded-md border border-purple-100 mb-4 text-sm text-purple-900">
-            <p className="mb-2"><strong>To receive messages:</strong> You must deploy the <code>server/webhook.js</code> code to a public server.</p>
-            <ul className="list-disc ml-5 space-y-1">
-                <li>If deploying to <strong>Render/Heroku</strong>, paste your app domain below.</li>
-                <li>If running locally, use <strong>Ngrok</strong> (<code>ngrok http 3000</code>) and paste the https URL below.</li>
-            </ul>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
-            <div>
-                <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">Your Server Domain</label>
-                <input 
-                    type="text" 
-                    value={serverDomain} 
-                    onChange={(e) => setServerDomain(e.target.value)}
-                    className="w-full border p-2 rounded text-sm focus:border-purple-500 outline-none"
-                    placeholder="e.g. https://ena-coach-bot.onrender.com"
-                />
-            </div>
-            <div>
-                <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">Webhook URL to Copy</label>
-                <div className="flex">
-                    <input 
-                        type="text" 
-                        readOnly 
-                        value={webhookUrl}
-                        className="w-full border p-2 rounded-l text-sm bg-gray-50 text-gray-700 font-mono"
-                    />
-                    <button 
-                        onClick={() => navigator.clipboard.writeText(webhookUrl)}
-                        className="bg-purple-600 text-white px-3 py-2 rounded-r text-sm hover:bg-purple-700"
-                        title="Copy to Clipboard"
-                    >
-                        <i className="fas fa-copy"></i>
-                    </button>
-                </div>
-            </div>
-        </div>
-        <div className="mt-4 text-xs text-gray-500">
-            <p><strong>Next Step:</strong> Paste the "Webhook URL to Copy" into your Evolution API Instance settings under "Webhook" and enable <code>MESSAGES_UPSERT</code>.</p>
         </div>
       </div>
 

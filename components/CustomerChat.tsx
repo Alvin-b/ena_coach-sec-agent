@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useMockBackend } from '../contexts/MockBackendContext';
 import { GeminiService } from '../services/geminiService';
-import { ChatMessage } from '../types';
+import { ChatMessage, Ticket } from '../types';
 import AuthModal from './AuthModal';
+import TicketCard from './TicketCard';
 
 const CustomerChat: React.FC = () => {
   const { searchRoutes, bookTicket, processPayment, logComplaint, getBusStatus, currentUser, logout, getUserTickets } = useMockBackend();
@@ -18,6 +19,7 @@ const CustomerChat: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Initialize Gemini Service
@@ -92,6 +94,9 @@ const CustomerChat: React.FC = () => {
     <div className="flex flex-col h-full bg-[#efeae2] relative">
       {/* Auth Modal Overlay */}
       {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
+      
+      {/* Ticket Card Overlay */}
+      {selectedTicket && <TicketCard ticket={selectedTicket} onClose={() => setSelectedTicket(null)} />}
 
       {/* WhatsApp Header */}
       <div className="bg-[#075e54] p-4 flex items-center text-white shadow-md z-10 sticky top-0">
@@ -119,25 +124,32 @@ const CustomerChat: React.FC = () => {
 
             {/* Dropdown Menu for Logged In User */}
             {showProfileMenu && currentUser && (
-                <div className="absolute right-0 top-10 w-64 bg-white rounded shadow-lg text-gray-800 z-50 overflow-hidden">
+                <div className="absolute right-0 top-10 w-72 bg-white rounded shadow-lg text-gray-800 z-40 overflow-hidden ring-1 ring-black ring-opacity-5">
                     <div className="p-4 border-b bg-gray-50">
                         <p className="font-bold">{currentUser.name}</p>
                         <p className="text-xs text-gray-500">{currentUser.email}</p>
                         <p className="text-xs text-gray-500">{currentUser.phoneNumber}</p>
                     </div>
-                    <div className="max-h-48 overflow-y-auto">
-                        <div className="p-2 text-xs font-bold text-gray-500 uppercase">My Bookings</div>
+                    <div className="max-h-60 overflow-y-auto">
+                        <div className="p-2 text-xs font-bold text-gray-500 uppercase bg-gray-50 sticky top-0">My Tickets</div>
                         {myBookings.length === 0 ? (
                             <p className="p-3 text-sm text-gray-400 text-center">No bookings found.</p>
                         ) : (
                             myBookings.map(ticket => (
-                                <div key={ticket.id} className="p-3 border-b hover:bg-gray-50 cursor-pointer">
-                                    <div className="flex justify-between">
-                                        <span className="font-bold text-sm">{ticket.routeDetails?.destination}</span>
-                                        <span className="text-xs text-green-600">{ticket.status}</span>
+                                <div 
+                                    key={ticket.id} 
+                                    className="p-3 border-b hover:bg-red-50 cursor-pointer transition group"
+                                    onClick={() => { setSelectedTicket(ticket); setShowProfileMenu(false); }}
+                                >
+                                    <div className="flex justify-between items-start">
+                                        <span className="font-bold text-sm text-gray-800">{ticket.routeDetails?.destination}</span>
+                                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${ticket.boardingStatus === 'boarded' ? 'bg-gray-200 text-gray-500' : 'bg-green-100 text-green-700'}`}>
+                                            {ticket.boardingStatus === 'boarded' ? 'USED' : 'ACTIVE'}
+                                        </span>
                                     </div>
-                                    <div className="text-xs text-gray-500 mt-1">
-                                        ID: {ticket.id} • Seat: {ticket.seatNumber}
+                                    <div className="flex justify-between mt-1 text-xs text-gray-500">
+                                         <span>Seat: {ticket.seatNumber}</span>
+                                         <span className="group-hover:text-red-600 group-hover:underline">View Ticket</span>
                                     </div>
                                 </div>
                             ))
@@ -175,7 +187,6 @@ const CustomerChat: React.FC = () => {
                     : 'bg-white text-gray-800 rounded-tl-none'
               }`}
             >
-              {/* Render simple markdown-like bolding */}
               <p className="whitespace-pre-wrap">{msg.text}</p>
               <span className="text-[10px] text-gray-500 block text-right mt-1">
                 {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}

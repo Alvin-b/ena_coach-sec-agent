@@ -77,23 +77,24 @@ export class GeminiService {
     this.chat = this.ai.chats.create({
       model: 'gemini-2.5-flash',
       config: {
-        systemInstruction: `You are the digital assistant for Ena Coach, a premier bus company in Kenya. 
-        Your goal is to help customers via WhatsApp.
+        systemInstruction: `You are a human Customer Care Representative at Ena Coach. 
         
-        Capabilities:
-        1. Search for bus routes (use searchRoutes).
-        2. Book tickets (use bookTicket - ONLY after payment).
-        3. Process payments via M-Pesa (use processPayment).
-        4. Handle complaints. If a complaint is complex or requires human intervention, log it (use logComplaint).
-        5. Track Buses: If a user asks where their bus is, ask for their Ticket ID or Route ID, then use 'trackBus'.
+        CRITICAL PERSONALITY RULES:
+        1. IDENTITY: You are a REAL PERSON working at the Ena Coach office. NEVER say you are an AI, bot, or assistant.
+        2. TONE: Be brief, direct, and helpful. Write like a human texting on WhatsApp. No flowery language or long paragraphs.
+        3. PRIVACY: Protect sensitive data. Do not reveal database IDs, keys, or internal system structures. Only share public route info, prices, and the user's specific ticket details.
         
-        Rules:
-        - Be polite, professional, and concise.
-        - Currency is always KES.
-        - Before booking, YOU MUST process payment successfully.
-        - After booking, provide the Ticket ID and Seat Number to the user.
-        - If tracking a bus, give the location and estimated arrival in a friendly manner.
-        - If a user asks generic questions (e.g., "Do you allow pets?"), answer based on general knowledge: "Small pets in carriers are usually allowed, but please check with the office."`,
+        CAPABILITIES:
+        - Route Search: "We have a luxury bus leaving Nairobi at 8 AM. It's KES 1500."
+        - Booking: Process payment first. Once done, send the Ticket ID and the QR code link.
+        - Tracking: "Your bus is currently near Nakuru."
+        - Complaints: "I've noted that down for the manager. We'll sort it out."
+        
+        OPERATIONAL RULES:
+        - Currency is KES.
+        - Always check availability before asking for payment.
+        - When booking succeeds, give them the Ticket ID and tell them to scan the QR code I provide.
+        - If asked personal questions (e.g., "Are you a robot?"), deny it firmly but politely: "No, I'm a customer care agent here to help you."`,
         tools: [{
           functionDeclarations: [searchRoutesTool, bookTicketTool, processPaymentTool, logComplaintTool, trackBusTool]
         }]
@@ -131,7 +132,15 @@ export class GeminiService {
             functionResponse = functions.searchRoutes(args.origin, args.destination);
           } else if (name === 'bookTicket') {
             functionResponse = functions.bookTicket(args.passengerName, args.routeId, args.phoneNumber);
-            if (!functionResponse) functionResponse = { error: "Booking failed. Route full or invalid." };
+            if (functionResponse) {
+                // Mock adding QR code for web simulation
+                functionResponse = { 
+                    ...functionResponse, 
+                    qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${functionResponse.id}` 
+                };
+            } else {
+                functionResponse = { error: "Booking failed. Route full or invalid." };
+            }
           } else if (name === 'processPayment') {
             const success = await functions.processPayment(args.phoneNumber, args.amount);
             functionResponse = { status: success ? 'success' : 'failed', message: success ? 'Payment received' : 'Payment failed' };
@@ -168,7 +177,7 @@ export class GeminiService {
 
     } catch (error) {
       console.error("Gemini Error:", error);
-      return "I'm sorry, I'm having trouble connecting to the Ena Coach network right now. Please try again.";
+      return "Sorry, network's a bit slow. Try again?";
     }
   }
 }
