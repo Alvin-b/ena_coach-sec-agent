@@ -1,0 +1,5 @@
+{
+  "name": "Ena Coach AI Agent",
+  "description": "A comprehensive simulation of an automated transportation booking system. Features a customer-facing AI chat interface (mimicking WhatsApp) for booking and support, and an admin dashboard for managing routes, tickets, and complaints. Powered by Gemini 2.5 Flash.",
+  "requestFramePermissions": []
+}
