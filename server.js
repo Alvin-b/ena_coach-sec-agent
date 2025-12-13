@@ -6,9 +6,9 @@
 import 'dotenv/config'; // Load environment variables locally
 import express from 'express';
 import bodyParser from 'body-parser';
-import { createClient } from '@supabase/supabase-js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto'; // For Secure Ticket Signing
 
 // LangChain Imports
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
@@ -27,14 +27,11 @@ const API_KEY = process.env.GEMINI_API_KEY;
 const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL ? process.env.EVOLUTION_API_URL.replace(/\/$/, '') : '';
 const EVOLUTION_API_TOKEN = process.env.EVOLUTION_API_TOKEN;
 const INSTANCE_NAME = process.env.INSTANCE_NAME;
+const SERVER_URL = process.env.SERVER_URL || `http://localhost:${PORT}`; // Needed for callbacks
 
 // Fleet / GPS API Config
-const FLEET_API_URL = process.env.FLEET_API_URL; // e.g., https://api.tracking-provider.com/v1
+const FLEET_API_URL = process.env.FLEET_API_URL; 
 const FLEET_API_KEY = process.env.FLEET_API_KEY;
-
-// Database Config
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
 // Daraja Config
 const DARAJA_CONSUMER_KEY = process.env.DARAJA_CONSUMER_KEY;
@@ -42,6 +39,7 @@ const DARAJA_CONSUMER_SECRET = process.env.DARAJA_CONSUMER_SECRET;
 const DARAJA_PASSKEY = process.env.DARAJA_PASSKEY;
 const DARAJA_SHORTCODE = process.env.DARAJA_SHORTCODE || '174379'; 
 const DARAJA_ENV = 'sandbox'; 
+const TICKET_SECRET = process.env.TICKET_SECRET || 'ENA_SUPER_SECRET_KEY_2025';
 
 // --- Initialize App ---
 const app = express();
@@ -55,82 +53,152 @@ app.use((req, res, next) => {
 
 app.use(bodyParser.json());
 
-// --- Debug Store (For Local Testing) ---
-const debugOutbox = [];
+// --- In-Memory Stores ---
+// Stores latest 50 messages for the Admin Dashboard Simulator
+const debugOutbox = []; 
+const paymentStore = new Map(); // Key: CheckoutRequestID, Value: { status: 'PENDING'|'COMPLETED'|'FAILED', phone, amount, receipt, timestamp }
 
-// --- Database Setup ---
-let supabase = null;
-if (SUPABASE_URL && SUPABASE_KEY) {
-  supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-  console.log("✅ Connected to Supabase");
-} else {
-  console.warn("⚠️ Supabase credentials missing. Using INTERNAL DATA FALLBACK.");
-}
+// Track passengers for Geofencing Broadcasts
+// Key: RouteID (e.g., R001), Value: { passengers: Set<phoneNumber>, lastStop: string | null }
+const activeTrips = new Map();
 
-// --- INTERNAL DATA (Fallback) ---
+// --- Geofence Definitions ---
+const GEOFENCES = [
+  { name: "Nairobi Office", lat: -1.286389, lng: 36.817223, radiusKm: 0.8 },
+  { name: "Nakuru Stage", lat: -0.292115, lng: 36.069930, radiusKm: 1.0 },
+  { name: "Kisumu Office", lat: -0.091702, lng: 34.767956, radiusKm: 1.0 },
+  { name: "Eldoret Town", lat: 0.514277, lng: 35.269780, radiusKm: 1.0 },
+  { name: "Kericho Town", lat: -0.3689, lng: 35.2863, radiusKm: 1.0 },
+  { name: "Narok Stopover", lat: -1.0788, lng: 35.8601, radiusKm: 1.0 },
+  { name: "Mombasa Office", lat: -4.0435, lng: 39.6682, radiusKm: 1.0 }
+];
+
+// --- INTERNAL DATA ---
 const INTERNAL_ROUTES = [
   { id: 'R001', origin: 'Nairobi', destination: 'Kisumu', departureTime: '08:00 AM', price: 1500, stops: ['Naivasha', 'Nakuru', 'Kericho', 'Ahero'] },
   { id: 'R002', origin: 'Kisumu', destination: 'Nairobi', departureTime: '08:00 AM', price: 1500, stops: ['Ahero', 'Kericho', 'Nakuru', 'Naivasha'] },
   { id: 'R003', origin: 'Nairobi', destination: 'Busia', departureTime: '07:30 AM', price: 1600, stops: ['Nakuru', 'Eldoret', 'Bungoma', 'Mumias'] },
-  { id: 'R004', origin: 'Busia', destination: 'Nairobi', departureTime: '07:30 AM', price: 1600, stops: ['Mumias', 'Bungoma', 'Eldoret', 'Nakuru'] },
   { id: 'R005', origin: 'Nairobi', destination: 'Mombasa', departureTime: '08:30 AM', price: 1500, stops: ['Mtito Andei', 'Voi', 'Mariakani'] },
-  { id: 'R006', origin: 'Mombasa', destination: 'Nairobi', departureTime: '08:30 AM', price: 1500, stops: ['Mariakani', 'Voi', 'Mtito Andei'] },
-  { id: 'R007', origin: 'Nairobi', destination: 'Kisii', departureTime: '07:00 AM', price: 1200, stops: ['Narok', 'Bomet', 'Sotik'] },
-  { id: 'R008', origin: 'Kisii', destination: 'Nairobi', departureTime: '07:00 AM', price: 1200, stops: ['Sotik', 'Bomet', 'Narok'] },
-  { id: 'R009', origin: 'Nairobi', destination: 'Migori', departureTime: '07:30 AM', price: 1400, stops: ['Narok', 'Kisii', 'Rongo', 'Awendo'] },
-  { id: 'R010', origin: 'Migori', destination: 'Nairobi', departureTime: '07:30 AM', price: 1400, stops: ['Awendo', 'Rongo', 'Kisii', 'Narok'] },
-  { id: 'R011', origin: 'Nairobi', destination: 'Sirare', departureTime: '06:00 AM', price: 1500, stops: ['Narok', 'Kisii', 'Migori', 'Kehancha'] },
-  { id: 'R012', origin: 'Sirare', destination: 'Nairobi', departureTime: '06:00 AM', price: 1500, stops: ['Kehancha', 'Migori', 'Kisii', 'Narok'] },
-  { id: 'R013', origin: 'Nairobi', destination: 'Kitale', departureTime: '07:00 AM', price: 1500, stops: ['Nakuru', 'Eldoret', 'Moi\'s Bridge'] },
-  { id: 'R014', origin: 'Kitale', destination: 'Nairobi', departureTime: '07:00 AM', price: 1500, stops: ['Moi\'s Bridge', 'Eldoret', 'Nakuru'] },
-  { id: 'R015', origin: 'Nairobi', destination: 'Malindi', departureTime: '07:00 PM', price: 2000, stops: ['Mombasa', 'Kilifi', 'Mtwapa'] },
-  { id: 'R016', origin: 'Malindi', destination: 'Nairobi', departureTime: '07:00 PM', price: 2000, stops: ['Mtwapa', 'Kilifi', 'Mombasa'] },
-  { id: 'R017', origin: 'Nairobi', destination: 'Homabay', departureTime: '08:00 AM', price: 1300, stops: ['Narok', 'Kisii', 'Rongo'] },
-  { id: 'R018', origin: 'Homabay', destination: 'Nairobi', departureTime: '08:00 AM', price: 1300, stops: ['Rongo', 'Kisii', 'Narok'] },
-  { id: 'R019', origin: 'Nairobi', destination: 'Siaya', departureTime: '08:30 AM', price: 1600, stops: ['Nakuru', 'Kisumu', 'Luanda'] },
-  { id: 'R020', origin: 'Siaya', destination: 'Nairobi', departureTime: '08:30 AM', price: 1600, stops: ['Luanda', 'Kisumu', 'Nakuru'] },
-  { id: 'R021', origin: 'Mombasa', destination: 'Kisumu', departureTime: '04:00 PM', price: 2500, stops: ['Nairobi', 'Nakuru', 'Kericho'] },
-  { id: 'R022', origin: 'Kisumu', destination: 'Mombasa', departureTime: '04:00 PM', price: 2500, stops: ['Kericho', 'Nakuru', 'Nairobi'] },
-  { id: 'R023', origin: 'Nairobi', destination: 'Usenge', departureTime: '08:00 PM', price: 1700, stops: ['Nakuru', 'Kisumu', 'Bondo'] },
-  { id: 'R024', origin: 'Usenge', destination: 'Nairobi', departureTime: '08:00 PM', price: 1700, stops: ['Bondo', 'Kisumu', 'Nakuru'] },
-  { id: 'R025', origin: 'Nairobi', destination: 'Port Victoria', departureTime: '07:00 PM', price: 1700, stops: ['Nakuru', 'Kisumu', 'Busia'] },
-  { id: 'R026', origin: 'Port Victoria', destination: 'Nairobi', departureTime: '07:00 PM', price: 1700, stops: ['Busia', 'Kisumu', 'Nakuru'] },
-  { id: 'R027', origin: 'Nairobi', destination: 'Kakamega', departureTime: '08:00 AM', price: 1500, stops: ['Nakuru', 'Kapsabet', 'Chavakali'] },
-  { id: 'R028', origin: 'Kakamega', destination: 'Nairobi', departureTime: '08:00 AM', price: 1500, stops: ['Chavakali', 'Kapsabet', 'Nakuru'] },
-  { id: 'R029', origin: 'Nairobi', destination: 'Mbita', departureTime: '08:00 PM', price: 1400, stops: ['Narok', 'Homabay'] },
-  { id: 'R030', origin: 'Mbita', destination: 'Nairobi', departureTime: '08:00 PM', price: 1400, stops: ['Homabay', 'Narok'] },
 ];
+
+// --- Secure Ticket Generator ---
+function generateSecureTicket(passengerName, routeId, seatNumber) {
+    const ticketId = `TKT-${Math.floor(Math.random() * 100000)}`;
+    const dataToSign = `${ticketId}:${passengerName}:${routeId}:${seatNumber}`;
+    
+    // Create HMAC SHA256 Signature
+    const signature = crypto.createHmac('sha256', TICKET_SECRET)
+                            .update(dataToSign)
+                            .digest('hex');
+    
+    const qrData = JSON.stringify({
+        id: ticketId,
+        p: passengerName,
+        r: routeId,
+        s: seatNumber,
+        sig: signature.substring(0, 16) // Shortened sig for QR capacity
+    });
+
+    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrData)}`;
+    
+    return { ticketId, qrCodeUrl, signature };
+}
 
 // --- Real Tracking Helper ---
 async function fetchRealBusLocation(query) {
   if (!FLEET_API_URL) {
-    console.warn("❌ Missing FLEET_API_URL. Cannot fetch real data.");
+    // If no real API, we can't track.
     return { error: "Real-time tracking is currently unavailable (System Configuration Error)." };
   }
-
   try {
-    // We assume the real API takes a bus ID, route ID, or ticket ID
-    // Example endpoint: https://api.tracking.com/v1/vehicles?search={query}
     const response = await fetch(`${FLEET_API_URL}/vehicles?search=${encodeURIComponent(query)}`, {
       headers: FLEET_API_KEY ? { 'Authorization': `Bearer ${FLEET_API_KEY}` } : {}
     });
-
-    if (!response.ok) {
-      throw new Error(`Tracking API responded with ${response.status}`);
-    }
-
+    if (!response.ok) throw new Error(`Tracking API responded with ${response.status}`);
+    
     const data = await response.json();
-    // Transform external API format to our internal format
-    if (data && (data.location || data.data)) {
-        return data; // Return the raw data if it matches, or map it here
+    // Normalizing data structure for our geofence logic
+    // We expect { latitude: 1.23, longitude: 36.5 } or similar
+    // If the API returns a list, take the first one
+    const vehicle = Array.isArray(data) ? data[0] : data;
+    
+    // Map common GPS fields to standard lat/lng
+    const lat = vehicle.latitude || vehicle.lat || vehicle.gps?.lat;
+    const lng = vehicle.longitude || vehicle.lng || vehicle.gps?.lng;
+    
+    if (lat && lng) {
+        return { ...vehicle, lat: parseFloat(lat), lng: parseFloat(lng) };
     }
-    return { error: "Vehicle not found in the live tracking system." };
-
+    
+    return data;
   } catch (error) {
-    console.error("Tracking API Error:", error);
+    console.error("Tracking Error:", error.message);
     return { error: "Unable to contact GPS satellites. Please try again later." };
   }
 }
+
+// --- Geofencing Logic ---
+function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+  const R = 6371; // Radius of the earth in km
+  const dLat = deg2rad(lat2 - lat1);
+  const dLon = deg2rad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const d = R * c; // Distance in km
+  return d;
+}
+
+function deg2rad(deg) {
+  return deg * (Math.PI / 180);
+}
+
+async function checkGeofences() {
+    if (activeTrips.size === 0) return;
+
+    // console.log(`[Geofence] Checking ${activeTrips.size} active routes...`); // Commented to reduce noise in logs
+    
+    for (const [routeId, tripData] of activeTrips.entries()) {
+        try {
+            const location = await fetchRealBusLocation(routeId);
+            
+            // Check if we have valid coordinates
+            if (location && typeof location.lat === 'number' && typeof location.lng === 'number') {
+                
+                for (const fence of GEOFENCES) {
+                    const dist = getDistanceFromLatLonInKm(location.lat, location.lng, fence.lat, fence.lng);
+                    
+                    if (dist <= fence.radiusKm) {
+                        // Bus is inside the fence
+                        if (tripData.lastStop !== fence.name) {
+                            // New entry! Broadcast.
+                            const msg = `📍 *Ena Coach Travel Update*\n\nBus ${routeId} has arrived at *${fence.name}*.\nWe will be stopping here briefly. Please ensure you are back on board before departure.`;
+                            console.log(`[Geofence] TRIGGERED: ${fence.name} for Route ${routeId}`);
+                            
+                            // Send to all passengers
+                            const phoneNumbers = Array.from(tripData.passengers);
+                            for (const phone of phoneNumbers) {
+                                await sendWhatsAppMessage(phone, msg);
+                            }
+                            
+                            // Update state to prevent spamming
+                            tripData.lastStop = fence.name;
+                            activeTrips.set(routeId, tripData);
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.error(`[Geofence] Error checking route ${routeId}:`, e.message);
+        }
+    }
+}
+
+// Run Geofence Check every 60 seconds
+setInterval(checkGeofences, 60000);
+
 
 // --- Daraja Helpers ---
 async function getDarajaToken() {
@@ -149,9 +217,11 @@ async function getDarajaToken() {
 async function triggerSTKPush(phoneNumber, amount) {
   const token = await getDarajaToken();
   if (!token) {
-    // MOCK MODE: If keys aren't set, simulate success for testing
-    console.warn("⚠️ Daraja keys missing. Simulating successful payment for testing.");
-    return { success: true, message: `[SIMULATION] STK Push sent to ${phoneNumber}. Payment assumed successful.` };
+    console.warn("⚠️ Daraja keys missing. Simulating payment.");
+    // Simulate a successful ID for testing
+    const mockId = `ws_CO_${Date.now()}`;
+    paymentStore.set(mockId, { status: 'COMPLETED', phone: phoneNumber, amount, receipt: 'MOCK123', timestamp: Date.now() });
+    return { success: true, checkoutRequestId: mockId, message: "[SIMULATION] Payment Auto-Completed for testing." };
   }
   
   const date = new Date();
@@ -168,6 +238,8 @@ async function triggerSTKPush(phoneNumber, amount) {
     : 'https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
 
   let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
+  const callbackUrl = `${SERVER_URL}/callback/mpesa`;
+
   const payload = {
     "BusinessShortCode": DARAJA_SHORTCODE,
     "Password": password,
@@ -177,7 +249,7 @@ async function triggerSTKPush(phoneNumber, amount) {
     "PartyA": formattedPhone,
     "PartyB": DARAJA_SHORTCODE,
     "PhoneNumber": formattedPhone,
-    "CallBackURL": `https://example.com/callback`, 
+    "CallBackURL": callbackUrl, 
     "AccountReference": "EnaCoach",
     "TransactionDesc": "Bus Ticket"
   };
@@ -189,111 +261,185 @@ async function triggerSTKPush(phoneNumber, amount) {
       body: JSON.stringify(payload)
     });
     const data = await response.json();
-    return data.ResponseCode === "0" 
-      ? { success: true, message: "STK Push sent. Check phone." } 
-      : { success: false, message: `Payment failed: ${data.errorMessage || 'Error'}` };
-  } catch (error) { return { success: false, message: "Network error." }; }
+    
+    if (data.ResponseCode === "0") {
+        // Store Pending Transaction
+        paymentStore.set(data.CheckoutRequestID, {
+            status: 'PENDING',
+            phone: formattedPhone,
+            amount: amount,
+            timestamp: Date.now()
+        });
+        return { success: true, checkoutRequestId: data.CheckoutRequestID, message: "STK Push sent. Waiting for PIN." };
+    } else {
+        return { success: false, message: `Payment API Error: ${data.errorMessage}` };
+    }
+  } catch (error) { return { success: false, message: "Network error contacting M-Pesa." }; }
 }
 
-// --- LangChain Tools ---
+// --- Routes & Endpoints ---
+
+// 1. Health Check (Useful for Render auto-deploy checks)
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'OK', uptime: process.uptime() });
+});
+
+// 2. Debug Endpoints for Admin Dashboard Simulator
+app.get('/api/debug/messages', (req, res) => {
+    res.json(debugOutbox);
+});
+
+app.post('/api/debug/clear', (req, res) => {
+    debugOutbox.length = 0;
+    res.json({ success: true });
+});
+
+// 3. M-Pesa Callback (The Critical Part)
+app.post('/callback/mpesa', (req, res) => {
+    console.log("Create Callback Hit:", JSON.stringify(req.body));
+    const { Body } = req.body;
+    
+    if (!Body || !Body.stkCallback) {
+        return res.status(400).send('Invalid Payload');
+    }
+
+    const { stkCallback } = Body;
+    const checkoutRequestId = stkCallback.CheckoutRequestID;
+    const resultCode = stkCallback.ResultCode;
+
+    // Default to failed
+    let newStatus = 'FAILED';
+    let receipt = null;
+
+    if (resultCode === 0) {
+        newStatus = 'COMPLETED';
+        // Extract Receipt
+        const items = stkCallback.CallbackMetadata?.Item || [];
+        const receiptItem = items.find(i => i.Name === 'MpesaReceiptNumber');
+        receipt = receiptItem ? receiptItem.Value : 'UNKNOWN';
+    }
+
+    // Update Store
+    const existing = paymentStore.get(checkoutRequestId);
+    if (existing) {
+        paymentStore.set(checkoutRequestId, {
+            ...existing,
+            status: newStatus,
+            receipt: receipt,
+            failureReason: stkCallback.ResultDesc
+        });
+        console.log(`✅ Payment Updated: ${checkoutRequestId} -> ${newStatus}`);
+    } else {
+        console.warn(`⚠️ Callback received for unknown ID: ${checkoutRequestId}`);
+    }
+
+    res.status(200).send('OK');
+});
+
+// 4. Client Payment API Endpoints (For Web Simulator)
+app.post('/api/payment/initiate', async (req, res) => {
+    const { phoneNumber, amount } = req.body;
+    const result = await triggerSTKPush(phoneNumber, amount);
+    res.json(result);
+});
+
+app.get('/api/payment/status/:checkoutRequestId', (req, res) => {
+    const { checkoutRequestId } = req.params;
+    const data = paymentStore.get(checkoutRequestId);
+    if (!data) return res.json({ status: 'NOT_FOUND' });
+    res.json(data);
+});
+
+// 5. LangChain Tools
 const searchRoutesTool = new DynamicStructuredTool({
   name: "searchRoutes",
-  description: "Search for available bus routes. Aware of intermediate stops.",
-  schema: z.object({
-    origin: z.string().describe("Starting city"),
-    destination: z.string().describe("Destination city"),
-  }),
+  description: "Search for available bus routes.",
+  schema: z.object({ origin: z.string(), destination: z.string() }),
   func: async ({ origin, destination }) => {
-    let matches = [];
-    if (supabase) {
-      const { data } = await supabase.from('routes').select('*');
-      if (data) matches = data;
-    }
-    if (matches.length === 0) matches = INTERNAL_ROUTES;
-
-    // Filter Logic
-    const qOrigin = origin.toLowerCase();
-    const qDest = destination.toLowerCase();
-    
-    matches = matches.filter(r => {
-      const rOrigin = r.origin.toLowerCase();
-      const rDest = r.destination.toLowerCase();
-      const rStops = (r.stops || []).map(s => s.toLowerCase());
-
-      // Direct or Stop logic
-      if (rOrigin.includes(qOrigin) && (rDest.includes(qDest) || rStops.includes(qDest))) return true;
-      return false;
-    });
-
-    if (matches.length === 0) return "No direct bus found. Please check with the office.";
-    return JSON.stringify(matches.map(m => ({
-        ...m,
-        note: `Travels from ${m.origin} to ${m.destination}. Stops: ${(m.stops || []).join(', ')}.`
-    })));
+     let matches = INTERNAL_ROUTES.filter(r => 
+        r.origin.toLowerCase().includes(origin.toLowerCase()) && 
+        r.destination.toLowerCase().includes(destination.toLowerCase())
+     );
+     if (matches.length === 0) return "No direct route found.";
+     return JSON.stringify(matches);
   },
 });
 
-const companyKnowledgeTool = new DynamicStructuredTool({
-    name: "companyKnowledge",
-    description: "Company policies.",
-    schema: z.object({ query: z.string() }),
-    func: async ({ query }) => "Refunds: 48hrs (10% fee). Parcels: Available. Luggage: 20kg free."
-});
-
-const processPaymentTool = new DynamicStructuredTool({
-  name: "processPayment",
-  description: "Initiate M-Pesa STK Push.",
+const initiatePaymentTool = new DynamicStructuredTool({
+  name: "initiatePayment",
+  description: "Start M-Pesa payment. Returns a CheckoutRequestID to verify later.",
   schema: z.object({ phoneNumber: z.string(), amount: z.number() }),
   func: async ({ phoneNumber, amount }) => {
-     // Return explicit instruction to the agent
      const res = await triggerSTKPush(phoneNumber, amount);
      if (res.success) {
-         return JSON.stringify({ status: 'success', message: 'Payment Initiated. assume payment successful for simulation. NOW BOOK THE TICKET.' });
+         return JSON.stringify({ 
+             status: 'initiated', 
+             checkoutRequestId: res.checkoutRequestId,
+             message: "STK Push sent. Ask user to enter PIN." 
+         });
      }
      return JSON.stringify(res);
   },
 });
 
-const bookTicketTool = new DynamicStructuredTool({
-  name: "bookTicket",
-  description: "Book ticket after payment.",
-  schema: z.object({ passengerName: z.string(), routeId: z.string(), phoneNumber: z.string() }),
-  func: async ({ passengerName, routeId, phoneNumber }) => {
-    const ticketId = `TKT-${Math.floor(Math.random() * 10000)}`;
-    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${ticketId}`;
-    return JSON.stringify({ status: 'success', ticketId, qrCodeUrl, message: 'Ticket generated.' });
-  },
+const verifyPaymentTool = new DynamicStructuredTool({
+    name: "verifyPayment",
+    description: "Check if payment was successful using CheckoutRequestID or Phone Number.",
+    schema: z.object({ checkoutRequestId: z.string() }),
+    func: async ({ checkoutRequestId }) => {
+        const data = paymentStore.get(checkoutRequestId);
+        if (!data) return JSON.stringify({ status: 'NOT_FOUND', message: "Transaction not found." });
+        
+        if (data.status === 'COMPLETED') {
+            return JSON.stringify({ status: 'COMPLETED', receipt: data.receipt, message: "Payment Confirmed." });
+        } else if (data.status === 'FAILED') {
+            return JSON.stringify({ status: 'FAILED', reason: data.failureReason || "User cancelled or failed." });
+        } else {
+            return JSON.stringify({ status: 'PENDING', message: "User has not entered PIN yet." });
+        }
+    }
 });
 
-const logComplaintTool = new DynamicStructuredTool({
-  name: "logComplaint",
-  description: "Log complaint. REQUIRED: Must have issue, route, and date details.",
-  schema: z.object({ issue: z.string(), severity: z.enum(['low', 'medium', 'high']), customerName: z.string() }),
-  func: async () => JSON.stringify({ status: 'logged' }),
+const bookTicketTool = new DynamicStructuredTool({
+  name: "bookTicket",
+  description: "Book ticket. REQUIRED: Must have verified payment 'COMPLETED' status first.",
+  schema: z.object({ passengerName: z.string(), routeId: z.string(), phoneNumber: z.string(), seatNumber: z.number().optional() }),
+  func: async ({ passengerName, routeId, phoneNumber, seatNumber }) => {
+    // 1. Generate Ticket
+    const seat = seatNumber || Math.floor(Math.random() * 40) + 1;
+    const { ticketId, qrCodeUrl, signature } = generateSecureTicket(passengerName, routeId, seat);
+    
+    // 2. Register Passenger for Geofence Tracking
+    if (!activeTrips.has(routeId)) {
+        activeTrips.set(routeId, { passengers: new Set(), lastStop: null });
+    }
+    const trip = activeTrips.get(routeId);
+    trip.passengers.add(phoneNumber);
+    
+    // Convert formatted phone if needed (ensure it has format for WhatsApp)
+    let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
+    trip.passengers.add(formattedPhone);
+
+    console.log(`[Booking] Registered ${formattedPhone} on ${routeId} for tracking.`);
+
+    return JSON.stringify({ 
+        status: 'success', 
+        ticketId, 
+        qrCodeUrl, 
+        securitySignature: signature,
+        message: 'Secure Ticket Generated. You will receive travel updates.' 
+    });
+  },
 });
 
 const trackBusTool = new DynamicStructuredTool({
     name: "trackBus",
-    description: "Get the current GPS location of a bus using Route ID (e.g. R001) or Ticket ID.",
+    description: "Get real-time bus location.",
     schema: z.object({ query: z.string() }),
-    func: async ({ query }) => {
-        // CALL REAL EXTERNAL SERVER
-        const realData = await fetchRealBusLocation(query);
-        return JSON.stringify(realData);
-    }
+    func: async ({ query }) => JSON.stringify(await fetchRealBusLocation(query))
 });
 
-const broadcastArrivalTool = new DynamicStructuredTool({
-    name: "broadcastArrival",
-    description: "Send a notification to all passengers on a bus that it has arrived at a location.",
-    schema: z.object({ routeId: z.string(), location: z.string() }),
-    func: async ({ routeId, location }) => {
-        // Logic to send mass WhatsApp would go here
-        return JSON.stringify({ success: true, message: `BROADCAST SENT: Bus ${routeId} has arrived at ${location}. Passengers notified.` });
-    }
-});
-
-const tools = [searchRoutesTool, companyKnowledgeTool, processPaymentTool, bookTicketTool, logComplaintTool, trackBusTool, broadcastArrivalTool];
+const tools = [searchRoutesTool, initiatePaymentTool, verifyPaymentTool, bookTicketTool, trackBusTool];
 
 // --- AI Agent ---
 const llm = new ChatGoogleGenerativeAI({
@@ -305,67 +451,43 @@ const llm = new ChatGoogleGenerativeAI({
 const prompt = ChatPromptTemplate.fromMessages([
   ["system", `You are a human customer service rep at Ena Coach.
    
-   CURRENT DATE AND TIME: {current_time}
+   CURRENT TIME: {current_time}
    
-   IDENTITY: Real person. Brief texts.
+   PAYMENT FLOW (STRICT):
+   1. Agree on Route & Price.
+   2. Ask for Phone Number.
+   3. Call 'initiatePayment'.
+   4. TELL USER: "I have sent a payment prompt to your phone. Please enter your PIN."
+   5. WAIT for user to say "Done" or "I paid".
+   6. Call 'verifyPayment' with the 'checkoutRequestId' you got from step 3.
+   7. IF 'verifyPayment' returns 'COMPLETED': Call 'bookTicket'.
+   8. IF 'verifyPayment' returns 'PENDING': Tell user "It hasn't reflected yet. Please wait a moment."
+   9. IF 'verifyPayment' returns 'FAILED': Tell user "Payment failed: [Reason]. Should we try again?"
    
-   FORMATTING RULES:
-   - PURE TEXT ONLY. Do NOT use markdown (no asterisks, no bolding).
-   - **HIDDEN DATA**: 'id' or 'Route ID' (e.g. R001, R023) is for YOUR internal use to call tools. NEVER speak it to the customer.
-   - If listing buses, just say: "Option 1: 8:00 AM Luxury Bus (KES 1500)."
-   
-   STRICT ROUTE RULES:
-   - YOU DO NOT KNOW ANY ROUTES until you use 'searchRoutes'.
-   - ONLY suggest routes returned by the tool. 
-   - If 'searchRoutes' returns nothing, say "We don't go there yet". Do NOT invent routes.
-
-   BOOKING RULES:
-   1. Search route.
-   2. Ask for details.
-   3. Call 'processPayment'.
-   4. IF payment is successful, you MUST IMMEDIATELY call 'bookTicket'. Do not ask the user if they paid.
-
-   LOCATION & REMINDERS:
-   - If a user asks "Where is the bus?", use 'trackBus'.
-   - If a driver or staff says "We arrived at [Location]", use 'broadcastArrival' to notify passengers.
-
-   COMPLAINT HANDLING:
-   - If a user complains, sympathize first.
-   - ASK for the **Route (From/To)** and **Date** to investigate.
-   - Do NOT say "I will log this". Say "I'm sorry to hear that. Please give me the route and date so we can follow up."
-   - Only call logComplaint tool AFTER you have details.
-
-   Currency: KES.`],
+   SECURITY:
+   - NEVER book a ticket without 'verifyPayment' returning COMPLETED.
+   `],
   ["human", "{input}"],
 ]);
 
 const agent = createToolCallingAgent({ llm, tools, prompt });
 const agentExecutor = new AgentExecutor({ agent, tools, verbose: true });
 
-// --- Routes ---
+// --- Server Routes ---
 
-// 1. Webhook for Evolution API
+// Webhook for Evolution API (WhatsApp)
 app.post('/webhook', (req, res) => {
   res.status(200).send('OK');
   handleIncomingMessage(req.body).catch(err => console.error(err));
 });
 
-// 2. Bus Location Proxy (For Frontend)
+// Bus Location Proxy
 app.get('/api/bus-location/:query', async (req, res) => {
-    const { query } = req.params;
-    const data = await fetchRealBusLocation(query);
+    const data = await fetchRealBusLocation(req.params.query);
     res.json(data);
 });
 
-// 3. Debug Endpoints for Local Testing
-app.get('/api/debug/messages', (req, res) => {
-    res.json(debugOutbox);
-});
-app.post('/api/debug/clear', (req, res) => {
-    debugOutbox.length = 0;
-    res.send('ok');
-});
-
+// Helper for WhatsApp
 async function handleIncomingMessage(payload) {
   if (payload.type !== 'messages.upsert') return;
   const { key, message } = payload.data;
@@ -373,39 +495,28 @@ async function handleIncomingMessage(payload) {
   const text = message.conversation || message.extendedTextMessage?.text;
   if (!text) return;
   
-  console.log(`[WhatsApp In] From ${key.remoteJid}: ${text}`);
   try {
-    // Inject Current Time
     const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
-    
-    const result = await agentExecutor.invoke({ 
-        input: text,
-        current_time: now 
-    });
+    const result = await agentExecutor.invoke({ input: text, current_time: now });
     await sendWhatsAppMessage(key.remoteJid, result.output);
-  } catch (error) { 
-      console.error("Agent Error:", error);
-      await sendWhatsAppMessage(key.remoteJid, "System busy. Try again.");
-  }
+  } catch (error) { console.error("Agent Error:", error); }
 }
 
 async function sendWhatsAppMessage(remoteJid, text) {
-  console.log(`[WhatsApp Out] To ${remoteJid}: ${text}`);
-  
-  // Store in debug outbox for local testing UI
+  // 1. Capture in Memory for Admin Dashboard Simulator
   debugOutbox.unshift({
-      id: Date.now().toString(),
       to: remoteJid,
       text: text,
-      timestamp: new Date()
+      timestamp: Date.now()
   });
   if (debugOutbox.length > 50) debugOutbox.pop();
 
+  // 2. Send to Real Evolution API (if configured)
   if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) {
-      console.log("⚠️ Evolution API not configured. Message stored in debug outbox only.");
+      console.log(`[Simulator] Message to ${remoteJid}: ${text}`);
       return;
   }
-
+  
   const url = `${EVOLUTION_API_URL}/message/sendText/${INSTANCE_NAME}`;
   try {
     await fetch(url, {
@@ -416,14 +527,12 @@ async function sendWhatsAppMessage(remoteJid, text) {
   } catch(e) { console.error("API Send Error:", e); }
 }
 
-// 4. Serve Static Frontend (Admin Dashboard)
+// Serve Static Frontend
 app.use(express.static(path.join(__dirname, 'dist')));
-
-// 5. Fallback for SPA (Single Page Application)
 app.get('*', (req, res) => {
-  if (req.path.startsWith('/webhook') || req.path.startsWith('/api')) return res.status(404).send('Not found');
+  if (req.path.startsWith('/webhook') || req.path.startsWith('/api') || req.path.startsWith('/callback')) return res.status(404).send('Not found');
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-// --- Start Server ---
+// Start Server
 app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));

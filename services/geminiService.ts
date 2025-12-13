@@ -1,57 +1,67 @@
 import { GoogleGenAI, FunctionDeclaration, Type, Chat, GenerateContentResponse, Part } from '@google/genai';
 import { Ticket } from '../types';
 
-// We define the tool schema here so the AI knows how to call our mock backend.
-
 const searchRoutesTool: FunctionDeclaration = {
   name: 'searchRoutes',
-  description: 'Search for available bus routes. Returns buses that travel between or THROUGH the requested cities.',
+  description: 'Search for available bus routes.',
   parameters: {
     type: Type.OBJECT,
     properties: {
-      origin: { type: Type.STRING, description: 'The starting city' },
-      destination: { type: Type.STRING, description: 'The destination city' },
+      origin: { type: Type.STRING },
+      destination: { type: Type.STRING },
     },
     required: ['origin', 'destination'],
   },
 };
 
-const bookTicketTool: FunctionDeclaration = {
-  name: 'bookTicket',
-  description: 'Book a ticket for a passenger after payment is confirmed. Returns the ticket details.',
+const initiatePaymentTool: FunctionDeclaration = {
+  name: 'initiatePayment',
+  description: 'Initiate M-Pesa STK Push. Returns a CheckoutRequestID which MUST be stored to verify payment later.',
   parameters: {
     type: Type.OBJECT,
     properties: {
-      passengerName: { type: Type.STRING, description: 'Name of the passenger' },
-      routeId: { type: Type.STRING, description: 'The ID of the route to book' },
-      phoneNumber: { type: Type.STRING, description: 'Customer phone number for the ticket' },
-    },
-    required: ['passengerName', 'routeId', 'phoneNumber'],
-  },
-};
-
-const processPaymentTool: FunctionDeclaration = {
-  name: 'processPayment',
-  description: 'Initiate an M-Pesa payment request (Daraja STK Push). Returns success or failure.',
-  parameters: {
-    type: Type.OBJECT,
-    properties: {
-      phoneNumber: { type: Type.STRING, description: 'The phone number to bill' },
-      amount: { type: Type.NUMBER, description: 'The amount to charge in KES' },
+      phoneNumber: { type: Type.STRING, description: 'Format: 0712345678' },
+      amount: { type: Type.NUMBER },
     },
     required: ['phoneNumber', 'amount'],
   },
 };
 
-const logComplaintTool: FunctionDeclaration = {
-  name: 'logComplaint',
-  description: 'Log a customer complaint. Use this ONLY after getting route and date details.',
+const verifyPaymentTool: FunctionDeclaration = {
+  name: 'verifyPayment',
+  description: 'Check the status of a specific payment transaction. Call this after the user says they have entered their PIN.',
   parameters: {
     type: Type.OBJECT,
     properties: {
-      issue: { type: Type.STRING, description: 'Description of the complaint including Route and Date' },
-      severity: { type: Type.STRING, enum: ['low', 'medium', 'high'], description: 'Severity level' },
-      customerName: { type: Type.STRING, description: 'Name of the customer' },
+      checkoutRequestId: { type: Type.STRING, description: 'The ID returned by initiatePayment' },
+    },
+    required: ['checkoutRequestId'],
+  },
+};
+
+const bookTicketTool: FunctionDeclaration = {
+  name: 'bookTicket',
+  description: 'Generate a SECURE ticket. ONLY Call this if verifyPayment returns "COMPLETED".',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      passengerName: { type: Type.STRING },
+      routeId: { type: Type.STRING },
+      phoneNumber: { type: Type.STRING },
+    },
+    required: ['passengerName', 'routeId', 'phoneNumber'],
+  },
+};
+
+const logComplaintTool: FunctionDeclaration = {
+  name: 'logComplaint',
+  description: 'Log a customer complaint.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      issue: { type: Type.STRING },
+      severity: { type: Type.STRING, enum: ['low', 'medium', 'high'] },
+      customerName: { type: Type.STRING },
     },
     required: ['issue', 'severity', 'customerName'],
   },
@@ -59,11 +69,11 @@ const logComplaintTool: FunctionDeclaration = {
 
 const trackBusTool: FunctionDeclaration = {
   name: 'trackBus',
-  description: 'Get the current location and status of a bus using a Route ID or Ticket ID.',
+  description: 'Get the current location and status of a bus.',
   parameters: {
     type: Type.OBJECT,
     properties: {
-      query: { type: Type.STRING, description: 'The Route ID (e.g., R001) or Ticket ID (e.g., TKT-1234)' },
+      query: { type: Type.STRING },
     },
     required: ['query'],
   },
@@ -72,71 +82,52 @@ const trackBusTool: FunctionDeclaration = {
 export class GeminiService {
   private ai: GoogleGenAI;
   private chat: Chat;
+  // We need to keep track of context ID across turns if possible, but Gemini manages context window.
+  // However, simple variables like checkoutRequestId need to be remembered by the model's context window.
 
   constructor(apiKey: string) {
     this.ai = new GoogleGenAI({ apiKey });
     this.chat = this.ai.chats.create({
       model: 'gemini-2.5-flash',
       config: {
-        systemInstruction: `You are a human Customer Care Representative at Ena Coach. 
-        
-        CRITICAL PERSONALITY RULES:
-        1. IDENTITY: You are a REAL PERSON working at the Ena Coach office. NEVER say you are an AI, bot, or assistant.
-        2. TONE: Be empathetic, professional, yet casual like a WhatsApp text.
-        3. FORMATTING: PURE TEXT ONLY. Do NOT use markdown.
-        
-        STRICT OUTPUT RULES:
-        - **HIDDEN DATA**: You will see 'id' or 'Route ID' (e.g., R001, R005) in the tool results. These are for YOUR internal use only.
-        - **ABSOLUTELY FORBIDDEN**: NEVER speak the Route ID to the customer.
-        - Example: "We have a bus at 8:00 AM for KES 1500." (NOT "Route R001 is available...")
-        
-        STRICT ROUTE KNOWLEDGE:
-        - ONLY recommend routes returned by the 'searchRoutes' tool.
-        - If 'searchRoutes' returns an empty list or says no bus found, YOU MUST tell the user "We do not have a bus for that route yet."
-        - DO NOT HALLUCINATE ROUTES. Do not make up departure times.
+        systemInstruction: `You are a Professional Booking Agent for Ena Coach.
 
-        BOOKING PROCESS (CRITICAL):
-        1. Search for the route first. Confirm the price and time with the user.
-        2. Ask for their Name and Phone Number.
-        3. Call 'processPayment'. 
-        4. **IMMEDIATELY** after 'processPayment' returns 'success', you MUST call 'bookTicket' in the SAME turn.
-        - DO NOT stop and ask "Did you receive the prompt?".
-        - DO NOT wait for the user.
-        - The flow is: Process Payment -> (Success) -> Book Ticket -> Show Ticket.
+        SECURITY PROTOCOL (M-PESA):
+        1. When user accepts price, ask for Phone Number.
+        2. Call 'initiatePayment(phone, amount)'. 
+        3. OUTPUT: "I have sent a payment request to [Phone]. Please enter your PIN to confirm."
+        4. **STOP** and wait for the user to reply (e.g., "Done", "I paid").
+        5. When user confirms, Call 'verifyPayment(checkoutRequestId)'.
+           - Note: You must remember the 'checkoutRequestId' from step 2's output.
+        6. IF 'verifyPayment' says 'COMPLETED':
+           - Call 'bookTicket'.
+           - Output: "Payment received! Here is your secure ticket."
+        7. IF 'verifyPayment' says 'PENDING':
+           - Output: "The system is still waiting for confirmation. Have you entered your PIN? Let me check again in a moment."
+        8. IF 'verifyPayment' says 'FAILED':
+           - Output: "The payment failed (Reason: [Reason]). Would you like to try again?"
 
-        LOCATION:
-        - If a user asks "Where is the bus?" or "Status", use 'trackBus'.
-        - You will be provided the Current Date/Time in every message. Use it to check if a bus has already departed.
-
-        COMPLAINTS:
-        - Sympathize first.
-        - Ask for Route and Date.
-        - Call logComplaint.
-        - Confirm follow-up.
-
-        Route Info:
-        - Routes are ALWAYS two-way.`,
+        NEVER issue a ticket without 'verifyPayment' returning COMPLETED status.
+        `,
         tools: [{
-          functionDeclarations: [searchRoutesTool, bookTicketTool, processPaymentTool, logComplaintTool, trackBusTool]
+          functionDeclarations: [searchRoutesTool, initiatePaymentTool, verifyPaymentTool, bookTicketTool, logComplaintTool, trackBusTool]
         }]
       }
     });
   }
 
-  // Wrapper to handle the chat and function execution loop
   async sendMessage(
     message: string, 
     functions: {
       searchRoutes: any,
+      initiatePayment: any, // Changed from processPayment
+      verifyPayment: any,   // New
       bookTicket: any,
-      processPayment: any,
       logComplaint: any,
       getBusStatus: any
     }
   ): Promise<{ text: string, ticket?: Ticket }> {
     try {
-      // Inject current time context into the message invisibly to the user interface logic, 
-      // but visible to the model.
       const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
       const contextualMessage = `[SYSTEM CONTEXT: Current Date & Time is ${now}]\nUser: ${message}`;
 
@@ -151,42 +142,36 @@ export class GeminiService {
         for (const call of response.functionCalls) {
           const { name, args, id } = call;
           let functionResponse;
-
           console.log(`[Gemini] Calling tool: ${name}`, args);
 
           if (name === 'searchRoutes') {
             functionResponse = functions.searchRoutes(args.origin, args.destination);
+          } else if (name === 'initiatePayment') {
+             // New Flow
+             const res = await functions.initiatePayment(args.phoneNumber, args.amount);
+             functionResponse = res; // Should contain checkoutRequestId
+          } else if (name === 'verifyPayment') {
+             // New Flow
+             const res = await functions.verifyPayment(args.checkoutRequestId);
+             functionResponse = res;
           } else if (name === 'bookTicket') {
             const ticket = functions.bookTicket(args.passengerName, args.routeId, args.phoneNumber);
             if (ticket) {
-                // Success
                 bookedTicket = ticket;
                 functionResponse = { 
                     ...ticket, 
                     status: 'success',
-                    message: "Ticket booked successfully."
+                    message: "Secure Ticket Generated."
                 };
             } else {
-                functionResponse = { error: "Booking failed. Route full or invalid." };
+                functionResponse = { error: "Booking failed." };
             }
-          } else if (name === 'processPayment') {
-            const success = await functions.processPayment(args.phoneNumber, args.amount);
-            // Hinting the model to proceed
-            functionResponse = { 
-              status: success ? 'success' : 'failed', 
-              message: success ? 'Payment successful. PROCEED TO BOOK TICKET IMMEDIATELY.' : 'Payment failed.' 
-            };
           } else if (name === 'logComplaint') {
             const complaintId = functions.logComplaint(args.customerName, args.issue, args.severity);
             functionResponse = { complaintId, status: 'logged' };
           } else if (name === 'trackBus') {
-            // AWAIT IS CRITICAL HERE for real fetch
             const status = await functions.getBusStatus(args.query);
-            if (status) {
-              functionResponse = status;
-            } else {
-              functionResponse = { error: "Bus not found." };
-            }
+            functionResponse = status || { error: "Bus not found." };
           } else {
               functionResponse = { error: "Unknown function" };
           }
@@ -212,7 +197,7 @@ export class GeminiService {
 
     } catch (error) {
       console.error("Gemini Error:", error);
-      return { text: "Sorry, network's a bit slow. Try again?" };
+      return { text: "Sorry, I lost connection. Can you repeat that?" };
     }
   }
 }

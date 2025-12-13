@@ -6,7 +6,7 @@ import AuthModal from './AuthModal';
 import TicketCard from './TicketCard';
 
 const CustomerChat: React.FC = () => {
-  const { searchRoutes, bookTicket, processPayment, logComplaint, getBusStatus, currentUser, logout, getUserTickets } = useMockBackend();
+  const { searchRoutes, bookTicket, initiatePayment, verifyPayment, logComplaint, getBusStatus, currentUser, logout, getUserTickets } = useMockBackend();
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
@@ -50,10 +50,12 @@ const CustomerChat: React.FC = () => {
     setIsLoading(true);
 
     try {
+      // Pass the new split payment functions to the Gemini Service
       const { text, ticket } = await gemini.sendMessage(input, {
         searchRoutes,
         bookTicket,
-        processPayment,
+        initiatePayment,
+        verifyPayment,
         logComplaint,
         getBusStatus
       });

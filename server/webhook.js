@@ -4,7 +4,6 @@
 
 import express from 'express';
 import bodyParser from 'body-parser';
-import { createClient } from '@supabase/supabase-js';
 
 // LangChain Imports
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
@@ -20,10 +19,6 @@ const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL ? process.env.EVOLUTION_
 const EVOLUTION_API_TOKEN = process.env.EVOLUTION_API_TOKEN;
 const INSTANCE_NAME = process.env.INSTANCE_NAME;
 
-// Database Config
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-
 // Daraja Config
 const DARAJA_CONSUMER_KEY = process.env.DARAJA_CONSUMER_KEY;
 const DARAJA_CONSUMER_SECRET = process.env.DARAJA_CONSUMER_SECRET;
@@ -35,16 +30,7 @@ const DARAJA_ENV = 'sandbox';
 const app = express();
 app.use(bodyParser.json());
 
-let supabase = null;
-if (SUPABASE_URL && SUPABASE_KEY) {
-  supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-  console.log("✅ Connected to Supabase");
-} else {
-  console.warn("⚠️ Supabase credentials missing. Using INTERNAL DATA FALLBACK.");
-}
-
-// --- HARDCODED DATA (For robustness when DB is offline) ---
-// This ensures the agent KNOWS all routes even without Supabase
+// --- HARDCODED DATA (Robust fallback) ---
 const INTERNAL_ROUTES = [
   { id: 'R001', origin: 'Nairobi', destination: 'Kisumu', departureTime: '08:00 AM', price: 1500, stops: ['Naivasha', 'Nakuru', 'Kericho', 'Ahero'] },
   { id: 'R002', origin: 'Kisumu', destination: 'Nairobi', departureTime: '08:00 AM', price: 1500, stops: ['Ahero', 'Kericho', 'Nakuru', 'Naivasha'] },
@@ -109,20 +95,7 @@ const searchRoutesTool = new DynamicStructuredTool({
     destination: z.string().describe("Destination city"),
   }),
   func: async ({ origin, destination }) => {
-    // 1. Try Supabase first
-    if (supabase) {
-      const { data, error } = await supabase.from('routes').select('*');
-      if (!error && data && data.length > 0) {
-        // Simple client-side filtering of DB results for stops
-        const matches = data.filter(r => {
-             const routeTxt = JSON.stringify(r).toLowerCase();
-             return routeTxt.includes(origin.toLowerCase()) && routeTxt.includes(destination.toLowerCase());
-        });
-        return JSON.stringify(matches);
-      }
-    }
-    
-    // 2. Fallback to Internal Knowledge Base
+    // Fallback to Internal Knowledge Base
     const matches = INTERNAL_ROUTES.filter(r => {
       const rOrigin = r.origin.toLowerCase();
       const rDest = r.destination.toLowerCase();
@@ -137,7 +110,6 @@ const searchRoutesTool = new DynamicStructuredTool({
       // If the user asks for a stop that is on the route
       if (rOrigin.includes(qOrigin) && rStops.includes(qDest)) return true;
 
-      // Advanced: Stop to Stop? (Not strictly implemented for brevity, but stops are visible)
       return false;
     });
 
@@ -150,9 +122,6 @@ const searchRoutesTool = new DynamicStructuredTool({
     })));
   },
 });
-
-// ... (Other tools: companyKnowledge, processPayment, bookTicket, logComplaint remain similar)
-// ... (Use INTERNAL_ROUTES logic in bookTicket if supabase is null)
 
 const companyKnowledgeTool = new DynamicStructuredTool({
     name: "companyKnowledge",
