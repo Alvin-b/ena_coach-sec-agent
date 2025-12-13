@@ -17,6 +17,10 @@ interface MockBackendContextType {
   
   // Actions
   searchRoutes: (origin: string, destination: string) => BusRoute[];
+  
+  // New Inventory Action
+  getInventory: (date: string) => Promise<BusRoute[]>;
+
   checkSeats: (routeId: string) => number;
   
   // New Payment Flow Actions
@@ -71,6 +75,28 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
     });
   };
 
+  // FETCH REAL INVENTORY
+  const getInventory = async (date: string): Promise<BusRoute[]> => {
+      try {
+          const res = await fetch(`/api/inventory?date=${date}`);
+          if (res.ok) {
+              const data = await res.json();
+              // Merge server stats with local static routes if needed, or just return server data
+              // Server returns data with 'booked' and 'available' keys
+              return data.map((d: any) => ({
+                  ...d,
+                  stops: [], // Server simplified routes don't have stops array, optional here
+                  availableSeats: d.available,
+                  capacity: d.capacity
+              }));
+          }
+          return [];
+      } catch (e) {
+          console.error("Failed to fetch inventory", e);
+          return [];
+      }
+  };
+
   const checkSeats = (routeId: string) => {
     const route = routes.find((r) => r.id === routeId);
     return route ? route.availableSeats : 0;
@@ -102,6 +128,8 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const bookTicket = (passengerName: string, routeId: string, phoneNumber: string, checkoutRequestId?: string) => {
+    // Legacy mock booking for Web UI Simulator (if used directly)
+    // The Agent now handles this on server side.
     const routeIndex = routes.findIndex((r) => r.id === routeId);
     if (routeIndex === -1) return null;
 
@@ -111,9 +139,6 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const updatedRoutes = [...routes];
     updatedRoutes[routeIndex] = { ...route, availableSeats: route.availableSeats - 1 };
     setRoutes(updatedRoutes);
-
-    // In a full implementation, we would call /api/ticket/generate here to get the signature
-    // For now, we simulate the structure.
     
     const ticketId = `TKT-${Math.floor(Math.random() * 10000)}`;
     const newTicket: Ticket = {
@@ -212,7 +237,8 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
       value={{
         routes, tickets, complaints, currentUser, whatsappConfig,
         searchRoutes, checkSeats, initiatePayment, verifyPayment, bookTicket, logComplaint, validateTicket,
-        login, register, logout, getUserTickets, getBusStatus, saveWhatsAppConfig
+        login, register, logout, getUserTickets, getBusStatus, saveWhatsAppConfig,
+        getInventory
       }}
     >
       {children}

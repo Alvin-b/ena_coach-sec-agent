@@ -30,18 +30,23 @@ const DARAJA_SHORTCODE = process.env.DARAJA_SHORTCODE || '4159923'; // Till Numb
 // In-Memory Stores
 const userSessions = new Map();
 const paymentStore = new Map();
+const ticketsStore = [];
+const BUS_CAPACITY = 45;
 
-// --- Initialize Services ---
-const app = express();
-app.use(bodyParser.json());
-
-// Routes (Simplified for context)
 const INTERNAL_ROUTES = [
   { id: 'R001', origin: 'Nairobi', destination: 'Kisumu', departureTime: '08:00 AM', price: 1500 },
   { id: 'R002', origin: 'Kisumu', destination: 'Nairobi', departureTime: '08:00 AM', price: 1500 },
   { id: 'R003', origin: 'Nairobi', destination: 'Busia', departureTime: '07:30 AM', price: 1600 },
   { id: 'R005', origin: 'Nairobi', destination: 'Mombasa', departureTime: '08:30 AM', price: 1500 },
 ];
+
+const app = express();
+app.use(bodyParser.json());
+
+// --- Helpers ---
+function getBookedSeats(routeId, date) {
+    return ticketsStore.filter(t => t.routeId === routeId && t.date === date).length;
+}
 
 // --- Daraja Helpers ---
 async function getDarajaToken() {
@@ -108,16 +113,12 @@ async function queryDarajaStatus(checkoutRequestId) {
     } catch (e) { return { status: 'UNKNOWN' }; }
 }
 
-// --- Payment Monitor ---
 function scheduleTransactionCheck(checkoutRequestId, userJid) {
-    const TIMEOUT_MS = 120000; // 2 minutes
+    const TIMEOUT_MS = 120000;
     setTimeout(async () => {
         const payment = paymentStore.get(checkoutRequestId);
         if (!payment || payment.status === 'COMPLETED') return; 
 
-        console.log(`[Payment Monitor] Timeout check for ${checkoutRequestId}`);
-        
-        // Force Check
         let finalStatus = payment.status;
         if (finalStatus === 'PENDING') {
             const check = await queryDarajaStatus(checkoutRequestId);
@@ -136,7 +137,6 @@ function scheduleTransactionCheck(checkoutRequestId, userJid) {
     }, TIMEOUT_MS);
 }
 
-// --- WhatsApp Helper ---
 async function sendWhatsAppMessage(remoteJid, text) {
     if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) return;
     try {
@@ -166,7 +166,6 @@ const initiatePaymentTool = new DynamicStructuredTool({
   func: async ({ phoneNumber, amount }) => {
      const res = await triggerSTKPush(phoneNumber, amount);
      if (res.success) {
-         // Schedule Timeout Monitor
          const jid = phoneNumber.replace('+', '').replace(/^0/, '254') + "@s.whatsapp.net";
          scheduleTransactionCheck(res.checkoutRequestId, jid);
          return JSON.stringify({ status: 'initiated', message: "STK Push sent." });
@@ -175,7 +174,26 @@ const initiatePaymentTool = new DynamicStructuredTool({
   },
 });
 
-const tools = [searchRoutesTool, initiatePaymentTool];
+const bookTicketTool = new DynamicStructuredTool({
+  name: "bookTicket",
+  description: "Book Ticket (Requires Date).",
+  schema: z.object({ 
+      passengerName: z.string(), 
+      routeId: z.string(), 
+      phoneNumber: z.string(), 
+      travelDate: z.string()
+  }),
+  func: async ({ passengerName, routeId, phoneNumber, travelDate }) => {
+    const booked = getBookedSeats(routeId, travelDate);
+    if (booked >= BUS_CAPACITY) return "Bus Fully Booked.";
+
+    const ticket = { id: `TKT-${Date.now()}`, passengerName, routeId, date: travelDate, seat: booked+1 };
+    ticketsStore.push(ticket);
+    return JSON.stringify({ status: 'success', message: 'Ticket Booked.', ticket });
+  },
+});
+
+const tools = [searchRoutesTool, initiatePaymentTool, bookTicketTool];
 
 // --- AI Agent ---
 const llm = new ChatGoogleGenerativeAI({
@@ -186,7 +204,7 @@ const llm = new ChatGoogleGenerativeAI({
 });
 
 const prompt = ChatPromptTemplate.fromMessages([
-  ["system", "You are Ena Coach. TIME: {current_time}. USER: {user_name}. FLOW: 1. Route? 2. Price? 3. Phone? 4. initiatePayment."],
+  ["system", "You are Ena Coach. TIME: {current_time}. USER: {user_name}. FLOW: 1. Route? 2. Price? 3. Date? 4. Phone? 5. initiatePayment."],
   new MessagesPlaceholder("chat_history"),
   ["human", "{input}"],
   new MessagesPlaceholder("agent_scratchpad"),
@@ -204,15 +222,11 @@ app.post('/webhook', async (req, res) => {
   if (!text) return res.status(200).send('OK');
   const remoteJid = data.key.remoteJid;
 
-  // Background Process
   (async () => {
       try {
          const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
-         
-         // 1. Load History
          let history = userSessions.get(remoteJid) || [];
 
-         // 2. Invoke Agent
          const result = await agentExecutor.invoke({ 
              input: text, 
              current_time: now, 
@@ -220,15 +234,12 @@ app.post('/webhook', async (req, res) => {
              chat_history: history
          });
          
-         // 3. Update History
          history.push(new HumanMessage(text));
          history.push(new AIMessage(result.output));
          if (history.length > 8) history = history.slice(-8);
          userSessions.set(remoteJid, history);
          
-         // 4. Send Reply
          await sendWhatsAppMessage(remoteJid, result.output);
-
       } catch(e) { console.error("Agent Error:", e); }
   })();
 

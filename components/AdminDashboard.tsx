@@ -1,15 +1,33 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useMockBackend } from '../contexts/MockBackendContext';
-import { Ticket, Complaint } from '../types';
+import { Ticket, Complaint, BusRoute } from '../types';
 import WhatsAppConfig from './WhatsAppConfig';
 
 const AdminDashboard: React.FC = () => {
-  const { tickets, complaints, routes, validateTicket } = useMockBackend();
+  const { tickets, complaints, routes, validateTicket, getInventory } = useMockBackend();
   const [activeSubTab, setActiveSubTab] = useState<'overview' | 'routes' | 'checkin' | 'whatsapp'>('overview');
+
+  // Inventory State
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [inventoryRoutes, setInventoryRoutes] = useState<BusRoute[]>([]);
+  const [loadingInventory, setLoadingInventory] = useState(false);
 
   // Check-in State
   const [scanInput, setScanInput] = useState('');
   const [scanResult, setScanResult] = useState<{ success: boolean; message: string; ticket?: Ticket } | null>(null);
+
+  useEffect(() => {
+    if (activeSubTab === 'routes') {
+        fetchInventoryData();
+    }
+  }, [activeSubTab, selectedDate]);
+
+  const fetchInventoryData = async () => {
+      setLoadingInventory(true);
+      const data = await getInventory(selectedDate);
+      setInventoryRoutes(data);
+      setLoadingInventory(false);
+  };
 
   const handleScan = (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,7 +83,7 @@ const AdminDashboard: React.FC = () => {
               : 'text-gray-500 hover:text-gray-700'
           }`}
         >
-          Fleet & Routes
+          Fleet & Routes (Inventory)
         </button>
         <button
           onClick={() => setActiveSubTab('checkin')}
@@ -172,78 +190,90 @@ const AdminDashboard: React.FC = () => {
         </div>
       ) : activeSubTab === 'routes' ? (
         <div className="space-y-6">
-           {/* Routes Stats */}
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-             <div className="bg-white p-4 rounded shadow-sm">
-               <p className="text-xs text-gray-500 uppercase font-bold">Total Fleet Capacity</p>
-               <p className="text-2xl font-bold text-gray-800">{routes.reduce((acc, r) => acc + r.capacity, 0)} Seats</p>
-             </div>
-             <div className="bg-white p-4 rounded shadow-sm">
-               <p className="text-xs text-gray-500 uppercase font-bold">Total Booked Seats</p>
-               <p className="text-2xl font-bold text-green-600">{routes.reduce((acc, r) => acc + (r.capacity - r.availableSeats), 0)} Seats</p>
-             </div>
-             <div className="bg-white p-4 rounded shadow-sm">
-               <p className="text-xs text-gray-500 uppercase font-bold">Occupancy Rate</p>
-               <p className="text-2xl font-bold text-blue-600">
-                 {Math.round((routes.reduce((acc, r) => acc + (r.capacity - r.availableSeats), 0) / routes.reduce((acc, r) => acc + r.capacity, 0)) * 100)}%
-               </p>
-             </div>
+           {/* Date Picker Header */}
+           <div className="bg-white p-4 rounded-lg shadow-sm flex items-center justify-between">
+              <div>
+                  <h2 className="text-lg font-bold text-gray-800">Seat Inventory</h2>
+                  <p className="text-xs text-gray-500">Real-time availability per date</p>
+              </div>
+              <div className="flex items-center space-x-2">
+                  <label className="text-sm font-semibold text-gray-600">Select Date:</label>
+                  <input 
+                    type="date" 
+                    value={selectedDate}
+                    onChange={(e) => setSelectedDate(e.target.value)}
+                    className="border border-gray-300 rounded px-3 py-2 text-sm focus:border-red-500 outline-none"
+                  />
+              </div>
            </div>
 
-           <div className="bg-white rounded-lg shadow-sm overflow-hidden">
-             <div className="p-4 border-b border-gray-100 bg-gray-50">
-               <h2 className="font-semibold text-gray-800">Route Management</h2>
+           {loadingInventory ? (
+               <div className="text-center py-10 text-gray-500">
+                   <i className="fas fa-spinner fa-spin fa-2x mb-2"></i>
+                   <p>Fetching server data...</p>
+               </div>
+           ) : (
+             <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+               <div className="p-4 border-b border-gray-100 bg-gray-50 flex justify-between">
+                 <h2 className="font-semibold text-gray-800">Route Status for {new Date(selectedDate).toDateString()}</h2>
+                 <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">Live Data</span>
+               </div>
+               <table className="w-full text-left text-sm">
+                 <thead className="bg-gray-100 text-gray-600">
+                   <tr>
+                     <th className="p-3">Route ID</th>
+                     <th className="p-3">Origin - Destination</th>
+                     <th className="p-3">Departure</th>
+                     <th className="p-3">Type</th>
+                     <th className="p-3 text-center">Capacity</th>
+                     <th className="p-3 text-center">Booked</th>
+                     <th className="p-3 text-center">Remaining</th>
+                     <th className="p-3 text-right">Status</th>
+                   </tr>
+                 </thead>
+                 <tbody className="divide-y divide-gray-100">
+                   {inventoryRoutes.map((route) => {
+                      const booked = route.capacity - route.availableSeats;
+                      const isFull = route.availableSeats === 0;
+                      
+                      return (
+                       <tr key={route.id} className="hover:bg-gray-50">
+                         <td className="p-3 font-mono text-xs">{route.id}</td>
+                         <td className="p-3 font-medium">{route.origin} &rarr; {route.destination}</td>
+                         <td className="p-3">{route.departureTime}</td>
+                         <td className="p-3">
+                           <span className={`px-2 py-1 rounded text-xs ${route.busType === 'Luxury' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-700'}`}>
+                             {route.busType}
+                           </span>
+                         </td>
+                         <td className="p-3 text-center">{route.capacity}</td>
+                         <td className="p-3 text-center font-bold text-gray-700">{booked}</td>
+                         <td className="p-3 text-center">
+                           <span className={`font-bold ${route.availableSeats < 5 ? 'text-red-500' : 'text-green-500'}`}>
+                             {route.availableSeats}
+                           </span>
+                         </td>
+                         <td className="p-3 text-right">
+                             {isFull ? (
+                                 <span className="text-red-600 font-bold text-xs">SOLD OUT</span>
+                             ) : (
+                                 <span className="text-green-600 font-bold text-xs">OPEN</span>
+                             )}
+                         </td>
+                       </tr>
+                      );
+                   })}
+                 </tbody>
+               </table>
              </div>
-             <table className="w-full text-left text-sm">
-               <thead className="bg-gray-100 text-gray-600">
-                 <tr>
-                   <th className="p-3">Route ID</th>
-                   <th className="p-3">Origin - Destination</th>
-                   <th className="p-3">Departure</th>
-                   <th className="p-3">Type</th>
-                   <th className="p-3 text-center">Capacity</th>
-                   <th className="p-3 text-center">Booked</th>
-                   <th className="p-3 text-center">Available</th>
-                   <th className="p-3 text-right">Revenue (Est)</th>
-                 </tr>
-               </thead>
-               <tbody className="divide-y divide-gray-100">
-                 {routes.map((route) => {
-                    const booked = route.capacity - route.availableSeats;
-                    const revenue = booked * route.price;
-                    const occupancy = (booked / route.capacity) * 100;
-                    
-                    return (
-                     <tr key={route.id} className="hover:bg-gray-50">
-                       <td className="p-3 font-mono text-xs">{route.id}</td>
-                       <td className="p-3 font-medium">{route.origin} &rarr; {route.destination}</td>
-                       <td className="p-3">{route.departureTime}</td>
-                       <td className="p-3">
-                         <span className={`px-2 py-1 rounded text-xs ${route.busType === 'Luxury' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-700'}`}>
-                           {route.busType}
-                         </span>
-                       </td>
-                       <td className="p-3 text-center">{route.capacity}</td>
-                       <td className="p-3 text-center font-bold text-gray-700">{booked}</td>
-                       <td className="p-3 text-center">
-                         <span className={`font-bold ${route.availableSeats < 5 ? 'text-red-500' : 'text-green-500'}`}>
-                           {route.availableSeats}
-                         </span>
-                       </td>
-                       <td className="p-3 text-right font-mono">KES {revenue.toLocaleString()}</td>
-                     </tr>
-                    );
-                 })}
-               </tbody>
-             </table>
-           </div>
+           )}
         </div>
       ) : (
         <>
-          {/* Metrics Cards */}
+          {/* Overview Tab (Existing Mock Data Fallback for visual continuity if needed, or update to use real data aggregation) */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
             <div className="bg-white p-6 rounded-lg shadow-sm border-l-4 border-blue-500">
-              <div className="text-gray-500 text-sm font-medium uppercase">Total Bookings</div>
+              <div className="text-gray-500 text-sm font-medium uppercase">Total Bookings (All Time)</div>
               <div className="text-3xl font-bold text-gray-800">{tickets.length}</div>
             </div>
             <div className="bg-white p-6 rounded-lg shadow-sm border-l-4 border-green-500">
