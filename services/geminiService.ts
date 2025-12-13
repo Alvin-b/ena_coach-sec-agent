@@ -48,8 +48,9 @@ const bookTicketTool: FunctionDeclaration = {
       passengerName: { type: Type.STRING },
       routeId: { type: Type.STRING },
       phoneNumber: { type: Type.STRING },
+      checkoutRequestId: { type: Type.STRING, description: 'The Verified Payment ID' },
     },
-    required: ['passengerName', 'routeId', 'phoneNumber'],
+    required: ['passengerName', 'routeId', 'phoneNumber', 'checkoutRequestId'],
   },
 };
 
@@ -102,7 +103,7 @@ export class GeminiService {
         5. When user confirms, Call 'verifyPayment(checkoutRequestId)'.
            - Note: You must remember the 'checkoutRequestId' from step 2's output.
         6. IF 'verifyPayment' says 'COMPLETED':
-           - Call 'bookTicket'.
+           - Call 'bookTicket(passengerName, routeId, phoneNumber, checkoutRequestId)'.
            - Output: "Payment received! Here is your secure ticket."
         7. IF 'verifyPayment' says 'PENDING':
            - Output: "The system is still waiting for confirmation. Have you entered your PIN? Let me check again in a moment."
@@ -157,16 +158,23 @@ export class GeminiService {
              const res = await functions.verifyPayment(args.checkoutRequestId);
              functionResponse = res;
           } else if (name === 'bookTicket') {
-            const ticket = functions.bookTicket(args.passengerName, args.routeId, args.phoneNumber);
-            if (ticket) {
-                bookedTicket = ticket;
-                functionResponse = { 
-                    ...ticket, 
-                    status: 'success',
-                    message: "Secure Ticket Generated."
-                };
+            // STRICT SECURITY CHECK
+            const paymentCheck = await functions.verifyPayment(args.checkoutRequestId);
+            
+            if (paymentCheck.status === 'COMPLETED') {
+                const ticket = functions.bookTicket(args.passengerName, args.routeId, args.phoneNumber, args.checkoutRequestId);
+                if (ticket) {
+                    bookedTicket = ticket;
+                    functionResponse = { 
+                        ...ticket, 
+                        status: 'success',
+                        message: "Secure Ticket Generated."
+                    };
+                } else {
+                    functionResponse = { error: "Booking failed (Server Error)." };
+                }
             } else {
-                functionResponse = { error: "Booking failed." };
+                 functionResponse = { error: `Payment Verification Failed. Status: ${paymentCheck.status}. Ticket denied.` };
             }
           } else if (name === 'logComplaint') {
             const complaintId = functions.logComplaint(args.customerName, args.issue, args.severity, args.incidentDate, args.routeInfo);

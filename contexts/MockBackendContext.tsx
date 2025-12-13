@@ -23,7 +23,7 @@ interface MockBackendContextType {
   initiatePayment: (phoneNumber: string, amount: number) => Promise<any>;
   verifyPayment: (checkoutRequestId: string) => Promise<any>;
   
-  bookTicket: (passengerName: string, routeId: string, phoneNumber: string) => Ticket | null;
+  bookTicket: (passengerName: string, routeId: string, phoneNumber: string, checkoutRequestId?: string) => Ticket | null;
   logComplaint: (customerName: string, issue: string, severity: 'low' | 'medium' | 'high', incidentDate?: string, routeInfo?: string) => string;
   
   // Admin Actions
@@ -101,7 +101,7 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
   };
 
-  const bookTicket = (passengerName: string, routeId: string, phoneNumber: string) => {
+  const bookTicket = (passengerName: string, routeId: string, phoneNumber: string, checkoutRequestId?: string) => {
     const routeIndex = routes.findIndex((r) => r.id === routeId);
     if (routeIndex === -1) return null;
 
@@ -123,7 +123,7 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
       seatNumber: route.capacity - route.availableSeats + 1,
       status: 'booked',
       boardingStatus: 'pending',
-      paymentId: `VERIFIED-PAYMENT`,
+      paymentId: checkoutRequestId || `VERIFIED-PAYMENT`,
       bookingTime: new Date().toISOString(),
       routeDetails: route,
       userId: currentUser?.id,
