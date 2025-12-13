@@ -20,6 +20,7 @@ export interface Ticket {
   boardingStatus: 'pending' | 'boarded';
   paymentId: string;
   bookingTime: string;
+  bookingDate: string; // Captured date of booking
   userId?: string; // Linked to a registered user
   routeDetails?: BusRoute;
   qrCodeUrl: string;

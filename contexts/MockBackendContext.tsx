@@ -141,6 +141,9 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setRoutes(updatedRoutes);
     
     const ticketId = `TKT-${Math.floor(Math.random() * 10000)}`;
+    const now = new Date();
+    const bookingDateStr = now.toISOString();
+
     const newTicket: Ticket = {
       id: ticketId,
       passengerName,
@@ -149,7 +152,8 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
       status: 'booked',
       boardingStatus: 'pending',
       paymentId: checkoutRequestId || `VERIFIED-PAYMENT`,
-      bookingTime: new Date().toISOString(),
+      bookingTime: bookingDateStr,
+      bookingDate: bookingDateStr,
       routeDetails: route,
       userId: currentUser?.id,
       qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${ticketId}`

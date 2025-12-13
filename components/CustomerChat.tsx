@@ -20,14 +20,31 @@ const CustomerChat: React.FC = () => {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+  
+  // Dynamic API Key Loading
+  const [dynamicApiKey, setDynamicApiKey] = useState<string>(process.env.API_KEY || '');
+  const [isKeyLoading, setIsKeyLoading] = useState<boolean>(!process.env.API_KEY);
+
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!dynamicApiKey) {
+        setIsKeyLoading(true);
+        fetch('/api/config')
+            .then(res => res.json())
+            .then(data => {
+                if (data.apiKey) setDynamicApiKey(data.apiKey);
+            })
+            .catch(err => console.error("Failed to load config", err))
+            .finally(() => setIsKeyLoading(false));
+    }
+  }, []);
 
   // Initialize Gemini Service
   const gemini = useMemo(() => {
-    // Note: In a real app, do not hardcode, use process.env.API_KEY
-    if (!process.env.API_KEY) return null;
-    return new GeminiService(process.env.API_KEY);
-  }, []);
+    if (!dynamicApiKey) return null;
+    return new GeminiService(dynamicApiKey);
+  }, [dynamicApiKey]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -50,7 +67,6 @@ const CustomerChat: React.FC = () => {
     setIsLoading(true);
 
     try {
-      // Pass the new split payment functions to the Gemini Service
       const { text, ticket } = await gemini.sendMessage(input, {
         searchRoutes,
         bookTicket,
@@ -82,12 +98,31 @@ const CustomerChat: React.FC = () => {
 
   const myBookings = currentUser ? getUserTickets() : [];
 
-  if (!process.env.API_KEY) {
+  if (isKeyLoading) {
+      return (
+          <div className="flex items-center justify-center h-full bg-gray-100">
+              <div className="text-center">
+                  <i className="fas fa-circle-notch fa-spin text-red-600 text-3xl mb-4"></i>
+                  <p className="text-gray-600">Connecting to secure server...</p>
+              </div>
+          </div>
+      );
+  }
+
+  if (!dynamicApiKey) {
       return (
           <div className="flex items-center justify-center h-full bg-gray-100 p-6">
-              <div className="bg-white p-8 rounded-lg shadow-md text-center">
-                  <h2 className="text-xl font-bold text-red-600 mb-2">API Key Missing</h2>
-                  <p className="text-gray-600">Please provide a valid Google Gemini API Key in <code>metadata.json</code> or via environment variables to run this simulation.</p>
+              <div className="bg-white p-8 rounded-lg shadow-md text-center max-w-md">
+                  <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4 text-red-600 text-2xl">
+                     <i className="fas fa-key"></i>
+                  </div>
+                  <h2 className="text-xl font-bold text-gray-800 mb-2">API Key Missing</h2>
+                  <p className="text-gray-600 mb-4 text-sm">
+                      The application could not find a valid Google Gemini API Key in the environment.
+                  </p>
+                  <p className="text-xs text-gray-500 bg-gray-50 p-3 rounded border border-gray-200">
+                      Please ensure <code>GEMINI_API_KEY</code> is set in your server environment variables (Render/Replit/Local .env).
+                  </p>
               </div>
           </div>
       )

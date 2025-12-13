@@ -22,11 +22,10 @@ import { HumanMessage, AIMessage } from "@langchain/core/messages";
 // --- Configuration ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-// RENDER SPECIFIC: Use process.env.PORT or default to 10000
 const PORT = process.env.PORT || 10000;
 
 // API Keys
-const API_KEY = process.env.GEMINI_API_KEY;
+const API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
 const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL ? process.env.EVOLUTION_API_URL.replace(/\/$/, '') : '';
 const EVOLUTION_API_TOKEN = process.env.EVOLUTION_API_TOKEN;
 const INSTANCE_NAME = process.env.INSTANCE_NAME;
@@ -77,12 +76,19 @@ const INTERNAL_ROUTES = [
 // --- Helpers ---
 function generateSecureTicket(passengerName, routeId, seatNumber, date) {
     const ticketId = `TKT-${Math.floor(Math.random() * 100000)}`;
-    const timestamp = Date.now();
-    const dataToSign = `${ticketId}:${passengerName}:${routeId}:${seatNumber}:${date}:${timestamp}`;
+    const now = new Date();
+    const bookingDate = now.toISOString();
+    const timestamp = now.getTime();
+    
+    // Include bookingDate in the signature data
+    const dataToSign = `${ticketId}:${passengerName}:${routeId}:${seatNumber}:${date}:${bookingDate}:${timestamp}`;
     const signature = crypto.createHmac('sha256', TICKET_SECRET).update(dataToSign).digest('hex');
-    const qrData = JSON.stringify({ id: ticketId, p: passengerName, r: routeId, s: seatNumber, d: date, sig: signature.substring(0, 16) });
+    
+    // Include 'bd' (bookingDate) in QR payload
+    const qrData = JSON.stringify({ id: ticketId, p: passengerName, r: routeId, s: seatNumber, d: date, bd: bookingDate, sig: signature.substring(0, 16) });
     const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrData)}`;
-    return { ticketId, qrCodeUrl, signature };
+    
+    return { ticketId, qrCodeUrl, signature, bookingDate };
 }
 
 function getBookedSeats(routeId, date) {
@@ -144,8 +150,12 @@ async function triggerSTKPush(phoneNumber, amount) {
 }
 
 async function queryDarajaStatus(checkoutRequestId) {
+    const local = paymentStore.get(checkoutRequestId);
+    if (local && local.status === 'COMPLETED') return { status: 'COMPLETED', message: 'Payment Received' };
+
     const token = await getDarajaToken();
-    if (!token) return { status: 'UNKNOWN' };
+    if (!token) return { status: 'UNKNOWN', message: 'Auth Failed' };
+    
     const timestamp = getDarajaTimestamp();
     const password = Buffer.from(`${DARAJA_SHORTCODE}${DARAJA_PASSKEY}${timestamp}`).toString('base64');
     
@@ -156,265 +166,238 @@ async function queryDarajaStatus(checkoutRequestId) {
         });
         const data = await response.json();
         if (data.ResponseCode === "0") {
-            if (data.ResultCode === "0") return { status: 'COMPLETED', message: data.ResultDesc };
-            if (['1032', '1037', '1'].includes(data.ResultCode)) return { status: 'FAILED', message: data.ResultDesc };
+            if (data.ResultCode === "0") {
+                 paymentStore.set(checkoutRequestId, { ...local, status: 'COMPLETED' });
+                 return { status: 'COMPLETED', message: data.ResultDesc };
+            }
+            if (['1032', '1037', '1'].includes(data.ResultCode)) {
+                paymentStore.set(checkoutRequestId, { ...local, status: 'FAILED' });
+                return { status: 'FAILED', message: data.ResultDesc };
+            }
             return { status: 'PENDING', message: data.ResultDesc };
         }
-        return { status: 'UNKNOWN' };
-    } catch (e) { return { status: 'UNKNOWN' }; }
+        return { status: 'UNKNOWN', message: data.errorMessage };
+    } catch (e) { return { status: 'UNKNOWN', message: 'Network Error' }; }
+}
+
+async function sendWhatsAppMessage(remoteJid, text) {
+    // Add to debug outbox for UI
+    debugOutbox.push({ to: remoteJid, text, timestamp: Date.now() });
+    if (debugOutbox.length > 50) debugOutbox.shift();
+
+    if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) return;
+    try {
+        await fetch(`${EVOLUTION_API_URL}/message/sendText/${INSTANCE_NAME}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': EVOLUTION_API_TOKEN },
+            body: JSON.stringify({ number: remoteJid, text: text })
+        });
+    } catch(e) { console.error("API Send Error:", e); }
 }
 
 function scheduleTransactionCheck(checkoutRequestId, userJid) {
-    const TIMEOUT_MS = 120000; // 2 minutes
+    const TIMEOUT_MS = 60000; // 1 min check
     setTimeout(async () => {
-        const payment = paymentStore.get(checkoutRequestId);
-        if (!payment || payment.status === 'COMPLETED') return; 
-
-        let finalStatus = payment.status;
-        if (finalStatus === 'PENDING') {
-            const check = await queryDarajaStatus(checkoutRequestId);
-            if (check.status !== 'UNKNOWN') finalStatus = check.status;
-        }
-
-        if (finalStatus === 'PENDING') {
-            paymentStore.set(checkoutRequestId, { ...payment, status: 'TIMEOUT' });
-            await sendWhatsAppMessage(userJid, "⚠️ Payment Session Timed Out. We did not receive your payment. Please try again.");
-        } else if (finalStatus === 'FAILED') {
-             await sendWhatsAppMessage(userJid, "❌ Payment Failed. Please check your balance or PIN and try again.");
-        } else if (finalStatus === 'COMPLETED') {
-             paymentStore.set(checkoutRequestId, { ...payment, status: 'COMPLETED' });
-             await sendWhatsAppMessage(userJid, "✅ Payment Confirmed! Please reply with 'Book Ticket' to finalize your booking.");
+        const check = await queryDarajaStatus(checkoutRequestId);
+        if (check.status === 'PENDING') {
+            await sendWhatsAppMessage(userJid, "⏳ Payment is taking longer than usual. Please ensure you entered your PIN.");
+        } else if (check.status === 'FAILED') {
+            await sendWhatsAppMessage(userJid, "❌ Payment Failed/Cancelled. Please try again.");
+        } else if (check.status === 'COMPLETED') {
+            await sendWhatsAppMessage(userJid, "✅ Payment Confirmed! Processing your ticket...");
+            // Optionally auto-book here if we had state, but we wait for user to say "Book"
         }
     }, TIMEOUT_MS);
 }
 
-// --- Tools Definition ---
-const searchRoutesTool = new DynamicStructuredTool({
-  name: "searchRoutes",
-  description: "Search routes. Args: origin, destination.",
-  schema: z.object({ origin: z.string(), destination: z.string() }),
-  func: async ({ origin, destination }) => {
-     let matches = INTERNAL_ROUTES.filter(r => r.origin.toLowerCase().includes(origin.toLowerCase()) && r.destination.toLowerCase().includes(destination.toLowerCase()));
-     if (matches.length === 0) return "No direct route found.";
-     return JSON.stringify(matches);
-  },
-});
-
-const initiatePaymentTool = new DynamicStructuredTool({
-  name: "initiatePayment",
-  description: "Send M-Pesa Prompt. Args: phoneNumber, amount.",
-  schema: z.object({ phoneNumber: z.string(), amount: z.number() }),
-  func: async ({ phoneNumber, amount }) => {
-     const res = await triggerSTKPush(phoneNumber, amount);
-     if (res.success) {
-         const jid = phoneNumber.replace('+', '').replace(/^0/, '254') + "@s.whatsapp.net";
-         scheduleTransactionCheck(res.checkoutRequestId, jid);
-         return JSON.stringify({ status: 'initiated', checkoutRequestId: res.checkoutRequestId, message: "STK Push sent." });
-     }
-     return JSON.stringify(res);
-  },
-});
-
-const verifyPaymentTool = new DynamicStructuredTool({
-    name: "verifyPayment",
-    description: "Check payment status. Args: checkoutRequestId.",
-    schema: z.object({ checkoutRequestId: z.string() }),
-    func: async ({ checkoutRequestId }) => {
-        let data = paymentStore.get(checkoutRequestId);
-        if (!data) return JSON.stringify({ status: 'NOT_FOUND' });
-        
-        if (data.status === 'PENDING') {
-             const queryResult = await queryDarajaStatus(checkoutRequestId);
-             if (queryResult.status !== 'UNKNOWN' && queryResult.status !== 'PENDING') {
-                 data.status = queryResult.status;
-                 paymentStore.set(checkoutRequestId, data);
-             }
-        }
-        return JSON.stringify({ status: data.status, message: data.status === 'COMPLETED' ? "Payment Received" : "Waiting" });
-    }
-});
-
-const bookTicketTool = new DynamicStructuredTool({
-  name: "bookTicket",
-  description: "Generate Ticket. Args: passengerName, routeId, phoneNumber, checkoutRequestId, travelDate.",
-  schema: z.object({ 
-      passengerName: z.string(), 
-      routeId: z.string(), 
-      phoneNumber: z.string(), 
-      checkoutRequestId: z.string(),
-      travelDate: z.string().describe("Format YYYY-MM-DD")
-  }),
-  func: async ({ passengerName, routeId, phoneNumber, checkoutRequestId, travelDate }) => {
-    // 1. Verify Payment
-    const payment = paymentStore.get(checkoutRequestId);
-    if (!payment || payment.status !== 'COMPLETED') return JSON.stringify({ status: 'error', message: "Payment Not Verified." });
-    
-    // 2. Check Capacity for Date
-    const booked = getBookedSeats(routeId, travelDate);
-    if (booked >= BUS_CAPACITY) {
-        return JSON.stringify({ status: 'error', message: "Bus is fully booked for this date." });
-    }
-
-    // 3. Book
-    const seatNumber = booked + 1;
-    const { ticketId, qrCodeUrl } = generateSecureTicket(passengerName, routeId, seatNumber, travelDate);
-    
-    const newTicket = {
-        id: ticketId,
-        routeId,
-        passengerName,
-        phone: phoneNumber,
-        seatNumber,
-        date: travelDate,
-        paymentId: checkoutRequestId,
-        qrCodeUrl,
-        status: 'booked'
-    };
-    ticketsStore.push(newTicket);
-
-    return JSON.stringify({ status: 'success', ticketId, qrCodeUrl, seatNumber, message: 'Ticket Generated.' });
-  },
-});
-
-const tools = [searchRoutesTool, initiatePaymentTool, verifyPaymentTool, bookTicketTool];
-
-// --- AI Agent Setup (Global Lazy Init) ---
-let agentExecutor = null;
+// --- Tools Setup ---
+let agentExecutor;
 
 async function initAgent() {
-  try {
-    const llm = new ChatGoogleGenerativeAI({
-      model: "gemini-2.5-flash",
-      apiKey: API_KEY || "dummy", 
-      temperature: 0,
-      maxOutputTokens: 150,
+    if (agentExecutor) return agentExecutor;
+    
+    // Tools
+    const searchRoutesTool = new DynamicStructuredTool({
+        name: "searchRoutes",
+        description: "Search routes.",
+        schema: z.object({ origin: z.string(), destination: z.string() }),
+        func: async ({ origin, destination }) => {
+           let matches = INTERNAL_ROUTES.filter(r => r.origin.toLowerCase().includes(origin.toLowerCase()) && r.destination.toLowerCase().includes(destination.toLowerCase()));
+           if (matches.length === 0) return "No direct route found.";
+           return JSON.stringify(matches);
+        },
+    });
+      
+    const initiatePaymentTool = new DynamicStructuredTool({
+        name: "initiatePayment",
+        description: "Initiate M-Pesa. Args: phoneNumber, amount.",
+        schema: z.object({ phoneNumber: z.string(), amount: z.number() }),
+        func: async ({ phoneNumber, amount }) => {
+           const res = await triggerSTKPush(phoneNumber, amount);
+           if (res.success) {
+               const jid = phoneNumber.replace('+', '').replace(/^0/, '254') + "@s.whatsapp.net";
+               scheduleTransactionCheck(res.checkoutRequestId, jid);
+               return JSON.stringify({ status: 'initiated', message: "STK Push sent.", checkoutRequestId: res.checkoutRequestId });
+           }
+           return JSON.stringify(res);
+        },
     });
 
-    const prompt = ChatPromptTemplate.fromMessages([
-      ["system", `You are Ena Coach. Be concise.
-      TIME: {current_time}
-      USER: {user_name}
+    const verifyPaymentTool = new DynamicStructuredTool({
+        name: "verifyPayment",
+        description: "Verify if payment is completed. Args: checkoutRequestId.",
+        schema: z.object({ checkoutRequestId: z.string() }),
+        func: async ({ checkoutRequestId }) => {
+            const res = await queryDarajaStatus(checkoutRequestId);
+            return JSON.stringify(res);
+        }
+    });
       
-      RULES:
-      1. Search route -> Show price.
-      2. Ask for **Travel Date** (YYYY-MM-DD).
-      3. Get phone -> Call initiatePayment.
-      4. WAIT for user to confirm payment.
-      5. Call verifyPayment.
-      6. If COMPLETED -> bookTicket (Must include date).
-      `],
-      new MessagesPlaceholder("chat_history"),
-      ["human", "{input}"],
-      new MessagesPlaceholder("agent_scratchpad"),
-    ]);
+    const bookTicketTool = new DynamicStructuredTool({
+        name: "bookTicket",
+        description: "Book Ticket (Requires Date & Payment ID).",
+        schema: z.object({ 
+            passengerName: z.string(), 
+            routeId: z.string(), 
+            phoneNumber: z.string(), 
+            travelDate: z.string(),
+            checkoutRequestId: z.string()
+        }),
+        func: async ({ passengerName, routeId, phoneNumber, travelDate, checkoutRequestId }) => {
+            const statusCheck = await queryDarajaStatus(checkoutRequestId);
+            if (statusCheck.status !== 'COMPLETED') return JSON.stringify({ error: "Payment not found or incomplete." });
 
+            const booked = getBookedSeats(routeId, travelDate);
+            if (booked >= BUS_CAPACITY) return "Bus Fully Booked.";
+      
+            const route = INTERNAL_ROUTES.find(r => r.id === routeId);
+            const seatNumber = booked + 1;
+            const { ticketId, qrCodeUrl, bookingDate } = generateSecureTicket(passengerName, routeId, seatNumber, travelDate);
+
+            const ticket = { id: ticketId, passengerName, routeId, date: travelDate, seat: seatNumber, qrUrl: qrCodeUrl, paymentId: checkoutRequestId, bookingDate };
+            ticketsStore.push(ticket);
+
+            return JSON.stringify({ status: 'success', message: 'Ticket Booked.', ticket });
+        },
+    });
+
+    const tools = [searchRoutesTool, initiatePaymentTool, verifyPaymentTool, bookTicketTool];
+    
+    // AI
+    const llm = new ChatGoogleGenerativeAI({
+        model: "gemini-2.5-flash",
+        apiKey: API_KEY, 
+        temperature: 0,
+        maxOutputTokens: 250,
+    });
+      
+    const prompt = ChatPromptTemplate.fromMessages([
+        ["system", `You are Ena Coach. TIME: {current_time}.
+        RULES:
+        1. Ask Origin/Dest.
+        2. Show Route & Price.
+        3. Ask Date.
+        4. Ask Phone & Confirm Amount.
+        5. Call 'initiatePayment'.
+        6. Wait for user to confirm they paid.
+        7. Call 'verifyPayment'.
+        8. If success, Call 'bookTicket'.
+        `],
+        new MessagesPlaceholder("chat_history"),
+        ["human", "{input}"],
+        new MessagesPlaceholder("agent_scratchpad"),
+    ]);
+      
     const agent = await createToolCallingAgent({ llm: llm.bindTools(tools), tools, prompt });
-    agentExecutor = new AgentExecutor({ agent, tools, verbose: false });
-    console.log("✅ AI Agent Initialized Successfully");
-  } catch (error) {
-    console.error("❌ AI Agent Initialization Failed (Check API Key):", error.message);
-  }
+    return new AgentExecutor({ agent, tools, verbose: true });
 }
 
-// --- API Endpoints ---
-app.get('/health', (req, res) => res.json({ status: 'OK' }));
+// --- API Endpoints for Frontend Simulator ---
 
-// ADMIN ENDPOINT: Inventory for a specific date
+// API Config Endpoint to serve keys to frontend
+app.get('/api/config', (req, res) => {
+    res.json({
+        apiKey: API_KEY || ''
+    });
+});
+
+app.post('/api/payment/initiate', async (req, res) => {
+    const { phoneNumber, amount } = req.body;
+    const result = await triggerSTKPush(phoneNumber, amount);
+    res.json(result);
+});
+
+app.get('/api/payment/status/:id', async (req, res) => {
+    const result = await queryDarajaStatus(req.params.id);
+    res.json(result);
+});
+
 app.get('/api/inventory', (req, res) => {
-    const { date } = req.query;
-    if (!date) return res.status(400).json({ error: "Date required" });
-
+    const date = req.query.date || new Date().toISOString().split('T')[0];
+    // Return routes with availability for that date
     const inventory = INTERNAL_ROUTES.map(route => {
         const booked = getBookedSeats(route.id, date);
         return {
             ...route,
             capacity: BUS_CAPACITY,
-            booked,
+            booked: booked,
             available: BUS_CAPACITY - booked
         };
     });
     res.json(inventory);
 });
 
+// Debug Endpoints
 app.get('/api/debug/messages', (req, res) => res.json(debugOutbox));
-app.post('/api/debug/clear', (req, res) => { debugOutbox.length = 0; res.json({ success: true }); });
+app.post('/api/debug/clear', (req, res) => { debugOutbox.length = 0; res.sendStatus(200); });
 
-// M-Pesa Callback
-app.post('/callback/mpesa', (req, res) => {
-    const { Body } = req.body;
-    if (Body && Body.stkCallback) {
-        const { CheckoutRequestID, ResultCode } = Body.stkCallback;
-        const newStatus = ResultCode === 0 ? 'COMPLETED' : 'FAILED';
-        const existing = paymentStore.get(CheckoutRequestID) || {};
-        paymentStore.set(CheckoutRequestID, { ...existing, status: newStatus, timestamp: Date.now() });
-    }
-    res.status(200).send('OK');
-});
-
-// --- Webhook ---
-async function handleIncomingMessage(payload) {
-  if (payload.type !== 'messages.upsert') return;
-  const { key, message, pushName } = payload.data;
-  if (key.fromMe || !message) return;
-  const text = message.conversation || message.extendedTextMessage?.text;
-  if (!text) return;
-  
-  const remoteJid = key.remoteJid;
-  
-  // Guard Clause for Agent
-  if (!agentExecutor) {
-      console.error("Agent not ready, ignoring message.");
-      return;
-  }
-
-  try {
-    const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
-    const user = pushName || "Customer";
-    let history = userSessions.get(remoteJid) || [];
+// --- Webhook Endpoint ---
+app.post('/webhook', async (req, res) => {
+    const { type, data } = req.body;
+    if (type !== 'messages.upsert' || !data.message) return res.status(200).send('OK');
     
-    const result = await agentExecutor.invoke({ 
-        input: text, 
-        current_time: now, 
-        user_name: user,
-        chat_history: history 
-    });
-
-    history.push(new HumanMessage(text));
-    history.push(new AIMessage(result.output));
-    if (history.length > 8) history = history.slice(-8);
-    userSessions.set(remoteJid, history);
-
-    await sendWhatsAppMessage(remoteJid, result.output);
-  } catch (error) { console.error("Agent Error:", error); }
-}
-
-async function sendWhatsAppMessage(remoteJid, text) {
-  debugOutbox.unshift({ to: remoteJid, text: text, timestamp: Date.now() });
-  if (debugOutbox.length > 50) debugOutbox.pop();
-  if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) return;
-  try {
-    await fetch(`${EVOLUTION_API_URL}/message/sendText/${INSTANCE_NAME}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': EVOLUTION_API_TOKEN },
-        body: JSON.stringify({ number: remoteJid, text: text })
-    });
-  } catch(e) { console.error("API Send Error:", e); }
-}
-
-app.post('/webhook', (req, res) => {
-    handleIncomingMessage(req.body); 
+    const text = data.message.conversation || data.message.extendedTextMessage?.text;
+    if (!text) return res.status(200).send('OK');
+    const remoteJid = data.key.remoteJid;
+  
+    // Run AI in background
+    (async () => {
+        try {
+           const executor = await initAgent();
+           const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
+           let history = userSessions.get(remoteJid) || [];
+  
+           const result = await executor.invoke({ 
+               input: text, 
+               current_time: now, 
+               chat_history: history
+           });
+           
+           history.push(new HumanMessage(text));
+           history.push(new AIMessage(result.output));
+           if (history.length > 8) history = history.slice(-8);
+           userSessions.set(remoteJid, history);
+           
+           await sendWhatsAppMessage(remoteJid, result.output);
+        } catch(e) { 
+            console.error("Agent Error:", e); 
+            await sendWhatsAppMessage(remoteJid, "System is briefly unavailable. Please try again.");
+        }
+    })();
+  
     res.status(200).send('OK');
 });
 
-// --- Static Files & Fallback ---
+// --- Static Frontend Serving ---
+// Serve static files from the 'dist' directory
 app.use(express.static(path.join(__dirname, 'dist')));
+
+// Handle React routing, return all requests to React app
 app.get('*', (req, res) => {
-  if (req.path.startsWith('/webhook') || req.path.startsWith('/api') || req.path.startsWith('/callback')) return res.status(404).send('Not found');
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-// --- Start Server (Corrected for Render) ---
+// --- Start Server ---
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server listening on port ${PORT}`);
-  // Initialize Agent AFTER server is listening to prevent startup timeouts
-  initAgent(); 
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Gemini Key Present: ${!!API_KEY}`);
 });
