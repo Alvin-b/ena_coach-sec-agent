@@ -121,6 +121,42 @@ const WhatsAppConfig: React.FC = () => {
       }
   };
 
+  const handlePublicWebhookTest = async () => {
+    if (!serverDomain) {
+        addLog("Error: Server URL not detected or set.");
+        return;
+    }
+    const target = `${serverDomain.replace(/\/$/, '')}/webhook`;
+    addLog(`Self-Testing Webhook at: ${target}...`);
+    addLog(`Sending a real HTTP POST request to check reachability...`);
+    
+    try {
+        const res = await fetch(target, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                type: 'messages.upsert',
+                data: {
+                    key: { remoteJid: 'SELF_TEST@s.whatsapp.net', fromMe: false, id: `TEST-${Date.now()}` },
+                    pushName: 'Connectivity Test',
+                    message: { conversation: 'This is a public connectivity test.' },
+                    messageType: 'conversation'
+                }
+            })
+        });
+        
+        if (res.ok) {
+            addLog("SUCCESS: Webhook endpoint is reachable (HTTP 200).");
+            addLog("ACTION: Check the 'Live Webhook Monitor' above. This request should appear there now.");
+        } else {
+            addLog(`FAILED: Webhook endpoint returned status ${res.status}.`);
+        }
+    } catch (e) {
+        addLog(`FAILED: Network error reaching your own webhook. ${e}`);
+        addLog("Note: If you are on localhost, this is normal cross-origin behavior. If deployed, check your server logs.");
+    }
+  };
+
   const handleTestConnection = async () => {
     setIsTestingConnection(true);
     setConnectionStatus('unknown');
@@ -193,6 +229,11 @@ const WhatsAppConfig: React.FC = () => {
       } else {
         const errText = await response.text();
         addLog(`FAILED: ${response.status} - ${errText}`);
+        
+        if (errText.includes('exists":false')) {
+            addLog("⚠️ ANALYSIS: The phone number provided is NOT registered on WhatsApp.");
+            addLog("Please check the country code (e.g., 254...) and ensure the number has an active WhatsApp account.");
+        }
       }
     } catch (error) {
       addLog(`ERROR: ${error}`);
@@ -354,6 +395,18 @@ const WhatsAppConfig: React.FC = () => {
                      />
                  </div>
                  
+                 <div className="mt-2">
+                     <button 
+                         onClick={handlePublicWebhookTest}
+                         className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-2 rounded shadow transition flex items-center justify-center"
+                     >
+                         <i className="fas fa-globe mr-2"></i> Verify Public Access
+                     </button>
+                     <p className="text-[10px] text-gray-500 mt-1 text-center">
+                         Sends a test POST to {webhookUrl} from your browser.
+                     </p>
+                 </div>
+
                  <h3 className="font-bold text-sm text-yellow-800 mt-4 mb-2">Required Server Env Vars</h3>
                  <div className="bg-gray-800 p-3 rounded text-xs text-green-400 font-mono overflow-x-auto">
                     GEMINI_API_KEY=...<br/>
