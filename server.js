@@ -60,19 +60,84 @@ const ticketsStore = [];
 const BUS_CAPACITY = 45;
 
 // **DYNAMIC ROUTES STORE**
-let routesStore = [
-  // Western
-  { id: 'R001', origin: 'Nairobi', destination: 'Kisumu', departureTime: '08:00 AM', price: 1500, busType: 'Luxury' },
-  { id: 'R002', origin: 'Kisumu', destination: 'Nairobi', departureTime: '08:00 AM', price: 1500, busType: 'Luxury' },
-  { id: 'R003', origin: 'Nairobi', destination: 'Busia', departureTime: '07:30 AM', price: 1600, busType: 'Luxury' },
-  { id: 'R004', origin: 'Busia', destination: 'Nairobi', departureTime: '08:00 PM', price: 1600, busType: 'Standard' },
-  { id: 'R005', origin: 'Nairobi', destination: 'Mombasa', departureTime: '08:30 AM', price: 1500, busType: 'Luxury' },
-  { id: 'R006', origin: 'Mombasa', destination: 'Nairobi', departureTime: '08:30 PM', price: 1500, busType: 'Luxury' },
-  { id: 'R007', origin: 'Nairobi', destination: 'Kisii', departureTime: '07:00 AM', price: 1200, busType: 'Luxury' },
-  { id: 'R008', origin: 'Kisii', destination: 'Nairobi', departureTime: '11:00 AM', price: 1200, busType: 'Standard' },
-  { id: 'R009', origin: 'Nairobi', destination: 'Homabay', departureTime: '08:00 AM', price: 1300, busType: 'Luxury' },
-  { id: 'R010', origin: 'Homabay', destination: 'Nairobi', departureTime: '08:00 PM', price: 1300, busType: 'Standard' },
+// Base definitions from the original system
+const BASE_ROUTES_DEF = [
+  // Western Route (via Nakuru, Kericho/Eldoret)
+  { origin: 'Nairobi', destination: 'Kisumu', departureTime: '08:00 AM', price: 1500, busType: 'Luxury', stops: ['Naivasha', 'Nakuru', 'Kericho', 'Ahero'] },
+  { origin: 'Nairobi', destination: 'Kisumu', departureTime: '09:00 PM', price: 1500, busType: 'Luxury', stops: ['Naivasha', 'Nakuru', 'Kericho', 'Ahero'] },
+  { origin: 'Nairobi', destination: 'Busia', departureTime: '07:30 AM', price: 1600, busType: 'Luxury', stops: ['Nakuru', 'Eldoret', 'Bungoma', 'Mumias'] },
+  { origin: 'Nairobi', destination: 'Busia', departureTime: '08:00 PM', price: 1600, busType: 'Standard', stops: ['Nakuru', 'Eldoret', 'Bungoma'] },
+  { origin: 'Nairobi', destination: 'Kakamega', departureTime: '08:00 AM', price: 1500, busType: 'Luxury', stops: ['Nakuru', 'Kapsabet', 'Chavakali'] },
+  { origin: 'Nairobi', destination: 'Bungoma', departureTime: '09:00 PM', price: 1500, busType: 'Standard', stops: ['Nakuru', 'Eldoret', 'Webuye'] },
+  { origin: 'Nairobi', destination: 'Kitale', departureTime: '07:00 AM', price: 1500, busType: 'Luxury', stops: ['Nakuru', 'Eldoret', "Moi's Bridge"] },
+  { origin: 'Nairobi', destination: 'Mumias', departureTime: '08:00 PM', price: 1600, busType: 'Standard', stops: ['Nakuru', 'Kisumu', 'Kakamega'] },
+  { origin: 'Nairobi', destination: 'Siaya', departureTime: '08:30 AM', price: 1600, busType: 'Luxury', stops: ['Nakuru', 'Kisumu', 'Luanda'] },
+  { origin: 'Nairobi', destination: 'Bondo', departureTime: '09:00 AM', price: 1600, busType: 'Luxury', stops: ['Nakuru', 'Kisumu', 'Nedwo'] },
+  { origin: 'Nairobi', destination: 'Usenge', departureTime: '08:00 PM', price: 1700, busType: 'Standard', stops: ['Nakuru', 'Kisumu', 'Bondo'] },
+  { origin: 'Nairobi', destination: 'Port Victoria', departureTime: '07:00 PM', price: 1700, busType: 'Standard', stops: ['Nakuru', 'Kisumu', 'Busia'] },
+
+  // Nyanza South (via Narok, Kisii)
+  { origin: 'Nairobi', destination: 'Kisii', departureTime: '07:00 AM', price: 1200, busType: 'Luxury', stops: ['Narok', 'Bomet', 'Sotik'] },
+  { origin: 'Nairobi', destination: 'Kisii', departureTime: '11:00 AM', price: 1200, busType: 'Standard', stops: ['Narok', 'Bomet'] },
+  { origin: 'Nairobi', destination: 'Homabay', departureTime: '08:00 AM', price: 1300, busType: 'Luxury', stops: ['Narok', 'Kisii', 'Rongo'] },
+  { origin: 'Nairobi', destination: 'Migori', departureTime: '07:30 AM', price: 1400, busType: 'Luxury', stops: ['Narok', 'Kisii', 'Rongo', 'Awendo'] },
+  { origin: 'Nairobi', destination: 'Sirare', departureTime: '06:00 AM', price: 1500, busType: 'Luxury', stops: ['Narok', 'Kisii', 'Migori', 'Kehancha'] },
+  { origin: 'Nairobi', destination: 'Mbita', departureTime: '08:00 PM', price: 1400, busType: 'Standard', stops: ['Narok', 'Homabay'] },
+  { origin: 'Nairobi', destination: 'Sori', departureTime: '07:00 PM', price: 1400, busType: 'Standard', stops: ['Narok', 'Homabay', 'Rod Kopany'] },
+  { origin: 'Nairobi', destination: 'Kendu Bay', departureTime: '01:00 PM', price: 1300, busType: 'Standard', stops: ['Narok', 'Oyugis'] },
+  { origin: 'Nairobi', destination: 'Oyugis', departureTime: '02:00 PM', price: 1200, busType: 'Standard', stops: ['Narok', 'Kisii'] },
+
+  // Coast Route (via Mombasa Rd)
+  { origin: 'Nairobi', destination: 'Mombasa', departureTime: '08:30 AM', price: 1500, busType: 'Luxury', stops: ['Mtito Andei', 'Voi', 'Mariakani'] },
+  { origin: 'Nairobi', destination: 'Mombasa', departureTime: '09:00 PM', price: 1500, busType: 'Luxury', stops: ['Mtito Andei', 'Voi'] },
+  { origin: 'Nairobi', destination: 'Malindi', departureTime: '07:00 PM', price: 2000, busType: 'Luxury', stops: ['Mombasa', 'Kilifi', 'Mtwapa'] },
+  { origin: 'Nairobi', destination: 'Ukunda', departureTime: '08:00 PM', price: 1800, busType: 'Luxury', stops: ['Mombasa', 'Likoni'] },
+  
+  // Cross-Country (Mombasa to Western)
+  { origin: 'Mombasa', destination: 'Kisumu', departureTime: '04:00 PM', price: 2500, busType: 'Luxury', stops: ['Nairobi', 'Nakuru', 'Kericho'] },
+  { origin: 'Mombasa', destination: 'Busia', departureTime: '03:00 PM', price: 2600, busType: 'Luxury', stops: ['Nairobi', 'Nakuru', 'Eldoret'] },
+  { origin: 'Mombasa', destination: 'Kitale', departureTime: '03:30 PM', price: 2600, busType: 'Standard', stops: ['Nairobi', 'Eldoret'] },
+
+  // Short Haul / Others
+  { origin: 'Nakuru', destination: 'Kisumu', departureTime: '10:00 AM', price: 800, busType: 'Standard', stops: ['Kericho'] },
+  { origin: 'Eldoret', destination: 'Nairobi', departureTime: '02:00 PM', price: 1000, busType: 'Standard', stops: ['Nakuru'] },
+  { origin: 'Kisumu', destination: 'Mombasa', departureTime: '01:00 PM', price: 2500, busType: 'Luxury', stops: ['Kericho', 'Nakuru', 'Nairobi'] },
 ];
+
+function initializeRoutes() {
+    let idCounter = 1;
+    const allRoutes = [];
+    
+    BASE_ROUTES_DEF.forEach(route => {
+        // Forward Route
+        allRoutes.push({
+            id: `R${idCounter.toString().padStart(3, '0')}`,
+            ...route,
+            availableSeats: BUS_CAPACITY,
+            capacity: BUS_CAPACITY
+        });
+        idCounter++;
+
+        // Reverse Route (Auto-generate return trip)
+        const reverseStops = route.stops ? [...route.stops].reverse() : [];
+        allRoutes.push({
+            id: `R${idCounter.toString().padStart(3, '0')}`,
+            origin: route.destination,
+            destination: route.origin,
+            departureTime: route.departureTime, // Assuming symmetric schedule for simplicity
+            price: route.price,
+            busType: route.busType,
+            stops: reverseStops,
+            availableSeats: BUS_CAPACITY,
+            capacity: BUS_CAPACITY
+        });
+        idCounter++;
+    });
+    return allRoutes;
+}
+
+let routesStore = initializeRoutes();
+console.log(`[Server] Routes initialized: ${routesStore.length} routes in memory.`);
 
 // --- Helpers ---
 function generateSecureTicket(passengerName, routeId, seatNumber, date) {
@@ -93,6 +158,7 @@ function generateSecureTicket(passengerName, routeId, seatNumber, date) {
 }
 
 function getBookedSeats(routeId, date) {
+    // Strictly filter by Date string (YYYY-MM-DD)
     return ticketsStore.filter(t => t.routeId === routeId && t.date === date).length;
 }
 
@@ -320,15 +386,16 @@ async function initAgent() {
       
     const prompt = ChatPromptTemplate.fromMessages([
         ["system", `You are Ena Coach. TIME: {current_time}.
-        RULES:
-        1. Ask Origin/Dest.
+        PROTOCOL:
+        1. Ask Origin & Destination.
         2. Show Route & Price.
         3. Ask Date.
-        4. Ask Phone & Confirm Amount.
-        5. Call 'initiatePayment'.
-        6. Wait for user to confirm they paid.
-        7. Call 'verifyPayment'.
-        8. If success, Call 'bookTicket'.
+        4. **CRITICAL**: Confirm Details (Origin, Dest, Date, Price) with user. "You want to travel to X on [Date]. Correct?"
+        5. Ask Phone Number.
+        6. Call 'initiatePayment'.
+        7. Wait for user confirmation.
+        8. Call 'verifyPayment'.
+        9. Call 'bookTicket'.
         `],
         new MessagesPlaceholder("chat_history"),
         ["human", "{input}"],
@@ -373,7 +440,9 @@ app.post('/api/routes', (req, res) => {
         destination,
         price: Number(price),
         departureTime,
-        busType
+        busType,
+        availableSeats: BUS_CAPACITY,
+        capacity: BUS_CAPACITY
     };
     routesStore.push(newRoute);
     res.json({ success: true, route: newRoute });
@@ -404,6 +473,24 @@ app.get('/api/inventory', (req, res) => {
         };
     });
     res.json(inventory);
+});
+
+// PASSENGER MANIFEST
+app.get('/api/manifest', (req, res) => {
+    const { routeId, date } = req.query;
+    if (!routeId || !date) return res.status(400).json({ error: "Missing routeId or date" });
+
+    const passengers = ticketsStore
+        .filter(t => t.routeId === routeId && t.date === date)
+        .map(t => ({
+            ticketId: t.id,
+            name: t.passengerName,
+            seat: t.seat,
+            status: t.status || 'booked',
+            boardingStatus: t.boardingStatus || 'pending'
+        }));
+    
+    res.json({ routeId, date, passengers, total: passengers.length });
 });
 
 // CONTACTS & CRM ENDPOINTS

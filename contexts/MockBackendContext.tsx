@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { BusRoute, Ticket, Complaint, User, BusLocation, Contact } from '../types';
+import { ALL_ROUTES } from '../data/enaRoutes';
 
 export interface WhatsAppConfigData {
   apiUrl: string;
@@ -24,6 +25,7 @@ interface MockBackendContextType {
   // Inventory
   getInventory: (date: string) => Promise<BusRoute[]>;
   checkSeats: (routeId: string) => number;
+  getRouteManifest: (routeId: string, date: string) => Promise<any>;
   
   // Payment
   initiatePayment: (phoneNumber: string, amount: number) => Promise<any>;
@@ -38,6 +40,12 @@ interface MockBackendContextType {
   broadcastMessage: (message: string, contactList: string[]) => Promise<{success: boolean, count: number}>;
   logComplaint: (customerName: string, issue: string, severity: 'low' | 'medium' | 'high', incidentDate?: string, routeInfo?: string) => string;
   
+  // Admin AI Helpers
+  getFinancialReport: (startDate?: string, endDate?: string) => { totalRevenue: number; ticketCount: number; averagePrice: number };
+  getOccupancyStats: () => { totalCapacity: number; totalBooked: number; utilization: string };
+  getComplaints: (status?: 'open' | 'resolved') => Complaint[];
+  resolveComplaint: (complaintId: string, resolutionMessage: string) => Promise<{success: boolean, message: string, notificationStatus: string}>;
+
   // Auth
   login: (identifier: string, password: string) => Promise<boolean>;
   register: (name: string, email: string, phoneNumber: string, password: string) => Promise<boolean>;
@@ -77,9 +85,16 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
           const res = await fetch('/api/routes');
           if (res.ok) {
               const data = await res.json();
-              setRoutes(data);
+              if (Array.isArray(data) && data.length > 0) {
+                  setRoutes(data);
+                  return;
+              }
           }
-      } catch (e) { console.error(e); }
+      } catch (e) { console.error("API Route fetch failed, using fallback.", e); }
+      
+      // Fallback if API fails or returns empty
+      console.log("Using local backup routes.");
+      setRoutes(ALL_ROUTES as BusRoute[]);
   };
 
   const updateRoutePrice = async (routeId: string, newPrice: number) => {
@@ -132,18 +147,40 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
           const res = await fetch(`/api/inventory?date=${date}`);
           if (res.ok) {
               const data = await res.json();
-              return data.map((d: any) => ({
-                  ...d,
-                  stops: d.stops || [], 
-                  availableSeats: d.available,
-                  capacity: d.capacity
-              }));
+              if (Array.isArray(data) && data.length > 0) {
+                  return data.map((d: any) => ({
+                      ...d,
+                      stops: d.stops || [], 
+                      availableSeats: d.available !== undefined ? d.available : d.availableSeats,
+                      capacity: d.capacity
+                  }));
+              }
           }
-          return [];
+          console.warn("Server inventory empty, using local backup.");
       } catch (e) {
-          console.error("Failed to fetch inventory", e);
-          return [];
+          console.error("Failed to fetch inventory from server", e);
       }
+      
+      // Fallback to local routes with default availability
+      return ALL_ROUTES.map(r => ({
+          ...r,
+          id: r.id || `BAK-${Math.random()}`,
+          availableSeats: r.availableSeats || 45,
+          capacity: r.capacity || 45,
+          stops: r.stops || []
+      })) as BusRoute[];
+  };
+
+  const getRouteManifest = async (routeId: string, date: string): Promise<any> => {
+      try {
+          const res = await fetch(`/api/manifest?routeId=${routeId}&date=${date}`);
+          if (res.ok) {
+              return await res.json();
+          }
+      } catch (e) {
+          console.error("Manifest fetch failed", e);
+      }
+      return { passengers: [], total: 0 };
   };
 
   const checkSeats = (routeId: string) => {
@@ -177,8 +214,6 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const bookTicket = (passengerName: string, routeId: string, phoneNumber: string, checkoutRequestId?: string) => {
-    // Legacy mock booking for Web UI Simulator (if used directly)
-    // The Agent now handles this on server side.
     const routeIndex = routes.findIndex((r) => r.id === routeId);
     if (routeIndex === -1) return null;
 
@@ -271,6 +306,62 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
       return { success: false, count: 0 };
   };
 
+  // --- Admin AI Helpers ---
+  const getFinancialReport = (startDate?: string, endDate?: string) => {
+    // Basic implementation: Aggregates all tickets currently in memory
+    // In a real app, date filtering would be applied here
+    const totalRevenue = tickets.reduce((acc, t) => acc + (t.routeDetails?.price || 0), 0);
+    const count = tickets.length;
+    return {
+      totalRevenue,
+      ticketCount: count,
+      averagePrice: count > 0 ? totalRevenue / count : 0
+    };
+  };
+
+  const getOccupancyStats = () => {
+    const totalCapacity = routes.reduce((acc, r) => acc + r.capacity, 0);
+    const totalAvailable = routes.reduce((acc, r) => acc + r.availableSeats, 0);
+    const totalBooked = totalCapacity - totalAvailable;
+    const utilization = totalCapacity > 0 ? ((totalBooked / totalCapacity) * 100).toFixed(1) + '%' : '0%';
+    
+    return {
+      totalCapacity,
+      totalBooked,
+      utilization
+    };
+  };
+
+  const getComplaints = (status?: 'open' | 'resolved') => {
+    if (status) return complaints.filter(c => c.status === status);
+    return complaints;
+  };
+
+  const resolveComplaint = async (complaintId: string, resolutionMessage: string) => {
+    const complaint = complaints.find(c => c.id === complaintId);
+    if (!complaint) return { success: false, message: "Complaint ID not found.", notificationStatus: "Failed" };
+
+    // Update local state
+    setComplaints(prev => prev.map(c => c.id === complaintId ? { ...c, status: 'resolved' } : c));
+
+    // Try to notify customer
+    // Simple matching by name for simulation
+    const contact = contacts.find(c => c.name.toLowerCase().includes(complaint.customerName.toLowerCase()));
+    let messageSent = false;
+    
+    if (contact) {
+        // Use the existing broadcast endpoint/function to send a single message
+        await broadcastMessage(resolutionMessage, [contact.phoneNumber]);
+        messageSent = true;
+    }
+
+    return { 
+        success: true, 
+        message: "Complaint marked as resolved.", 
+        notificationStatus: messageSent ? `Message sent to ${contact?.phoneNumber}` : "Could not find customer phone number to send notification."
+    };
+  };
+
   // --- Auth ---
   const login = async (identifier: string, password: string): Promise<boolean> => {
     await new Promise(r => setTimeout(r, 1000));
@@ -318,7 +409,8 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
         routes, tickets, complaints, currentUser, whatsappConfig, contacts,
         searchRoutes, checkSeats, initiatePayment, verifyPayment, bookTicket, logComplaint, validateTicket,
         login, register, logout, getUserTickets, getBusStatus, saveWhatsAppConfig,
-        getInventory, updateRoutePrice, addRoute, fetchAllRoutes, fetchContacts, broadcastMessage
+        getInventory, updateRoutePrice, addRoute, fetchAllRoutes, fetchContacts, broadcastMessage,
+        getFinancialReport, getOccupancyStats, getRouteManifest, getComplaints, resolveComplaint
       }}
     >
       {children}

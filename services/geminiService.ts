@@ -1,6 +1,7 @@
 import { GoogleGenAI, FunctionDeclaration, Type, Chat, GenerateContentResponse, Part } from '@google/genai';
 import { Ticket } from '../types';
 
+// --- CUSTOMER TOOLS ---
 const searchRoutesTool: FunctionDeclaration = {
   name: 'searchRoutes',
   description: 'Search for available bus routes.',
@@ -82,33 +83,107 @@ const trackBusTool: FunctionDeclaration = {
   },
 };
 
+// --- ADMIN TOOLS ---
+const financialReportTool: FunctionDeclaration = {
+  name: 'getFinancialReport',
+  description: 'Get total revenue, ticket count, and average price stats.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      startDate: { type: Type.STRING, description: 'Optional start date YYYY-MM-DD' },
+      endDate: { type: Type.STRING, description: 'Optional end date YYYY-MM-DD' }
+    },
+  },
+};
+
+const occupancyStatsTool: FunctionDeclaration = {
+  name: 'getOccupancyStats',
+  description: 'Get current fleet utilization percentages and capacity data.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {},
+  },
+};
+
+const adminBroadcastTool: FunctionDeclaration = {
+    name: 'broadcastMessage',
+    description: 'Send a marketing message to all contacts.',
+    parameters: {
+        type: Type.OBJECT,
+        properties: {
+            message: { type: Type.STRING },
+            confirm: { type: Type.BOOLEAN, description: 'Must be true to send' }
+        },
+        required: ['message', 'confirm']
+    }
+};
+
+const getManifestTool: FunctionDeclaration = {
+    name: 'getRouteManifest',
+    description: 'Get a list of passengers for a specific route and date.',
+    parameters: {
+        type: Type.OBJECT,
+        properties: {
+            routeId: { type: Type.STRING },
+            date: { type: Type.STRING, description: 'YYYY-MM-DD' }
+        },
+        required: ['routeId', 'date']
+    }
+};
+
+const getComplaintsTool: FunctionDeclaration = {
+    name: 'getComplaints',
+    description: 'Get a list of customer complaints to summarize or review.',
+    parameters: {
+        type: Type.OBJECT,
+        properties: {
+            status: { type: Type.STRING, enum: ['open', 'resolved'], description: 'Optional filter' }
+        }
+    }
+};
+
+const resolveComplaintTool: FunctionDeclaration = {
+    name: 'resolveComplaint',
+    description: 'Resolve a complaint and optionally send a resolution message to the customer.',
+    parameters: {
+        type: Type.OBJECT,
+        properties: {
+            complaintId: { type: Type.STRING },
+            resolutionMessage: { type: Type.STRING, description: 'The message to send to the customer about the resolution.' }
+        },
+        required: ['complaintId', 'resolutionMessage']
+    }
+};
+
 export class GeminiService {
   private ai: GoogleGenAI;
-  private chat: Chat;
-  // We need to keep track of context ID across turns if possible, but Gemini manages context window.
-  // However, simple variables like checkoutRequestId need to be remembered by the model's context window.
+  private customerChat: Chat;
+  private adminChat: Chat;
 
   constructor(apiKey: string) {
     this.ai = new GoogleGenAI({ apiKey });
-    this.chat = this.ai.chats.create({
+    
+    // 1. Customer Chat Instance
+    this.customerChat = this.ai.chats.create({
       model: 'gemini-2.5-flash',
       config: {
         systemInstruction: `You are a Professional Booking Agent for Ena Coach.
 
-        SECURITY PROTOCOL (M-PESA):
-        1. When user accepts price, ask for Phone Number.
-        2. Call 'initiatePayment(phone, amount)'. 
-        3. OUTPUT: "I have sent a payment request to [Phone]. Please enter your PIN to confirm."
-        4. **STOP** and wait for the user to reply (e.g., "Done", "I paid").
-        5. When user confirms, Call 'verifyPayment(checkoutRequestId)'.
-           - Note: You must remember the 'checkoutRequestId' from step 2's output.
-        6. IF 'verifyPayment' says 'COMPLETED':
+        **CRITICAL SECURITY & CONFIRMATION PROTOCOL**:
+        1. When the user selects a route, you MUST ask for the Travel Date.
+        2. Once you have the Route and Date, you MUST output a confirmation message in this exact format:
+           "Just to confirm, you want to book a seat to [Destination] for [Date]. The price is [Price]. Is that correct?"
+        3. DO NOT ask for a Phone Number or proceed to payment until the user answers "Yes" to the confirmation question.
+        4. If the user confirms, ask for the M-Pesa Phone Number.
+        5. Call 'initiatePayment(phone, amount)'. 
+        6. OUTPUT: "I have sent a payment request to [Phone]. Please enter your PIN to confirm."
+        7. **STOP** and wait for the user to reply (e.g., "Done", "I paid").
+        8. When user confirms payment, Call 'verifyPayment(checkoutRequestId)'.
+           - Note: You must remember the 'checkoutRequestId' from step 5.
+        9. IF 'verifyPayment' says 'COMPLETED':
            - Call 'bookTicket(passengerName, routeId, phoneNumber, checkoutRequestId)'.
            - Output: "Payment received! Here is your secure ticket."
-        7. IF 'verifyPayment' says 'PENDING':
-           - Output: "The system is still waiting for confirmation. Have you entered your PIN? Let me check again in a moment."
-        8. IF 'verifyPayment' says 'FAILED':
-           - Output: "The payment failed (Reason: [Reason]). Would you like to try again?"
+        10. IF 'verifyPayment' says 'PENDING' or 'FAILED', inform the user accordingly.
 
         NEVER issue a ticket without 'verifyPayment' returning COMPLETED status.
         `,
@@ -117,14 +192,46 @@ export class GeminiService {
         }]
       }
     });
+
+    // 2. Admin Chat Instance
+    this.adminChat = this.ai.chats.create({
+        model: 'gemini-2.5-flash',
+        config: {
+            systemInstruction: `You are an Intelligent Operations Manager Assistant for Ena Coach.
+            Your role is to help the admin analyze data, manage the fleet, and make decisions.
+            
+            CAPABILITIES:
+            1. Financials: Calculate revenue, averages, and ticket sales volume using 'getFinancialReport'.
+            2. Fleet Status: Check occupancy and utilization using 'getOccupancyStats'.
+            3. Manifests: To see who is traveling, use 'getRouteManifest(routeId, date)'.
+            4. Marketing: Draft and send broadcast messages using 'broadcastMessage'.
+            5. Customer Support: Access complaints using 'getComplaints' to summarize issues. Resolve them using 'resolveComplaint(complaintId, message)' which will update the status and notify the customer.
+            6. General Query: Answer questions about routes using 'searchRoutes'.
+            
+            TONE: Professional, concise, data-driven. Use tables or lists for numbers.`,
+            tools: [{
+                functionDeclarations: [
+                    financialReportTool, 
+                    occupancyStatsTool, 
+                    adminBroadcastTool,
+                    searchRoutesTool,
+                    trackBusTool,
+                    getManifestTool,
+                    getComplaintsTool,
+                    resolveComplaintTool
+                ]
+            }]
+        }
+    });
   }
 
+  // --- CUSTOMER MESSAGE HANDLER ---
   async sendMessage(
     message: string, 
     functions: {
       searchRoutes: any,
-      initiatePayment: any, // Changed from processPayment
-      verifyPayment: any,   // New
+      initiatePayment: any, 
+      verifyPayment: any,  
       bookTicket: any,
       logComplaint: any,
       getBusStatus: any
@@ -134,7 +241,7 @@ export class GeminiService {
       const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
       const contextualMessage = `[SYSTEM CONTEXT: Current Date & Time is ${now}]\nUser: ${message}`;
 
-      let response: GenerateContentResponse = await this.chat.sendMessage({ message: contextualMessage });
+      let response: GenerateContentResponse = await this.customerChat.sendMessage({ message: contextualMessage });
       let bookedTicket: Ticket | undefined;
       
       let loops = 0;
@@ -145,31 +252,23 @@ export class GeminiService {
         for (const call of response.functionCalls) {
           const { name, args, id } = call;
           let functionResponse;
-          console.log(`[Gemini] Calling tool: ${name}`, args);
+          console.log(`[Gemini Customer] Calling tool: ${name}`, args);
 
           if (name === 'searchRoutes') {
             functionResponse = functions.searchRoutes(args.origin, args.destination);
           } else if (name === 'initiatePayment') {
-             // New Flow
              const res = await functions.initiatePayment(args.phoneNumber, args.amount);
-             functionResponse = res; // Should contain checkoutRequestId
+             functionResponse = res; 
           } else if (name === 'verifyPayment') {
-             // New Flow
              const res = await functions.verifyPayment(args.checkoutRequestId);
              functionResponse = res;
           } else if (name === 'bookTicket') {
-            // STRICT SECURITY CHECK
             const paymentCheck = await functions.verifyPayment(args.checkoutRequestId);
-            
             if (paymentCheck.status === 'COMPLETED') {
                 const ticket = functions.bookTicket(args.passengerName, args.routeId, args.phoneNumber, args.checkoutRequestId);
                 if (ticket) {
                     bookedTicket = ticket;
-                    functionResponse = { 
-                        ...ticket, 
-                        status: 'success',
-                        message: "Secure Ticket Generated."
-                    };
+                    functionResponse = { ...ticket, status: 'success', message: "Secure Ticket Generated." };
                 } else {
                     functionResponse = { error: "Booking failed (Server Error)." };
                 }
@@ -196,7 +295,7 @@ export class GeminiService {
         }
 
         if (parts.length > 0) {
-            response = await this.chat.sendMessage({ message: parts });
+            response = await this.customerChat.sendMessage({ message: parts });
         }
       }
 
@@ -206,8 +305,80 @@ export class GeminiService {
       };
 
     } catch (error) {
-      console.error("Gemini Error:", error);
+      console.error("Gemini Customer Error:", error);
       return { text: "Sorry, I lost connection. Can you repeat that?" };
     }
+  }
+
+  // --- ADMIN MESSAGE HANDLER ---
+  async sendAdminMessage(
+    message: string,
+    functions: {
+        getFinancialReport: any,
+        getOccupancyStats: any,
+        broadcastMessage: any,
+        searchRoutes: any,
+        getBusStatus: any,
+        contacts: any[],
+        getRouteManifest: any,
+        getComplaints: any,
+        resolveComplaint: any
+    }
+  ): Promise<string> {
+      try {
+        const responsePromise = this.adminChat.sendMessage({ message });
+        let response = await responsePromise;
+        let loops = 0;
+
+        while (response.functionCalls && response.functionCalls.length > 0 && loops < 5) {
+            loops++;
+            const parts: Part[] = [];
+            
+            for (const call of response.functionCalls) {
+                const { name, args, id } = call;
+                let functionResponse;
+                console.log(`[Gemini Admin] Calling tool: ${name}`, args);
+
+                if (name === 'getFinancialReport') {
+                    functionResponse = functions.getFinancialReport(args.startDate, args.endDate);
+                } else if (name === 'getOccupancyStats') {
+                    functionResponse = functions.getOccupancyStats();
+                } else if (name === 'broadcastMessage') {
+                     if (args.confirm) {
+                         const phones = functions.contacts.map((c: any) => c.phoneNumber);
+                         const res = await functions.broadcastMessage(args.message, phones);
+                         functionResponse = res;
+                     } else {
+                         functionResponse = { status: "pending_confirmation", message: "Please ask user to confirm." };
+                     }
+                } else if (name === 'searchRoutes') {
+                    functionResponse = functions.searchRoutes(args.origin, args.destination);
+                } else if (name === 'trackBus') {
+                    functionResponse = await functions.getBusStatus(args.query);
+                } else if (name === 'getRouteManifest') {
+                    functionResponse = await functions.getRouteManifest(args.routeId, args.date);
+                } else if (name === 'getComplaints') {
+                    functionResponse = functions.getComplaints(args.status);
+                } else if (name === 'resolveComplaint') {
+                    functionResponse = await functions.resolveComplaint(args.complaintId, args.resolutionMessage);
+                }
+
+                parts.push({
+                    functionResponse: {
+                        name: name,
+                        response: { result: functionResponse },
+                        id: id
+                    }
+                });
+            }
+            if (parts.length > 0) {
+                response = await this.adminChat.sendMessage({ message: parts });
+            }
+        }
+        return response.text || "Processing completed.";
+      } catch (error) {
+          console.error("Gemini Admin Error:", error);
+          return "I encountered an error processing your administrative request.";
+      }
   }
 }

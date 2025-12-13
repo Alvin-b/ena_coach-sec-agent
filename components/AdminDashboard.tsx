@@ -2,15 +2,18 @@ import React, { useState, useEffect } from 'react';
 import { useMockBackend } from '../contexts/MockBackendContext';
 import { Ticket, Complaint, BusRoute } from '../types';
 import WhatsAppConfig from './WhatsAppConfig';
+import AdminAssistant from './AdminAssistant';
 
 const AdminDashboard: React.FC = () => {
-  const { tickets, complaints, routes, validateTicket, getInventory, updateRoutePrice, addRoute, contacts, broadcastMessage } = useMockBackend();
+  const { tickets, complaints, routes, validateTicket, getInventory, getRouteManifest, updateRoutePrice, addRoute, contacts, broadcastMessage } = useMockBackend();
   const [activeSubTab, setActiveSubTab] = useState<'overview' | 'routes' | 'checkin' | 'whatsapp' | 'crm'>('overview');
 
   // Inventory State
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [inventoryRoutes, setInventoryRoutes] = useState<BusRoute[]>([]);
   const [loadingInventory, setLoadingInventory] = useState(false);
+  const [manifestData, setManifestData] = useState<{passengers: any[], total: number} | null>(null);
+  const [showManifestModal, setShowManifestModal] = useState(false);
 
   // Route Management State
   const [routeSearch, setRouteSearch] = useState('');
@@ -27,6 +30,9 @@ const AdminDashboard: React.FC = () => {
   // Check-in State
   const [scanInput, setScanInput] = useState('');
   const [scanResult, setScanResult] = useState<{ success: boolean; message: string; ticket?: Ticket } | null>(null);
+  
+  // AI Assistant Toggle
+  const [showAiAssistant, setShowAiAssistant] = useState(false);
 
   useEffect(() => {
     if (activeSubTab === 'routes') {
@@ -39,6 +45,12 @@ const AdminDashboard: React.FC = () => {
       const data = await getInventory(selectedDate);
       setInventoryRoutes(data);
       setLoadingInventory(false);
+  };
+
+  const handleViewManifest = async (routeId: string) => {
+      const data = await getRouteManifest(routeId, selectedDate);
+      setManifestData(data);
+      setShowManifestModal(true);
   };
 
   const handleScan = (e: React.FormEvent) => {
@@ -105,18 +117,82 @@ const AdminDashboard: React.FC = () => {
   );
 
   return (
-    <div className="h-full bg-gray-50 p-6 overflow-y-auto">
+    <div className="h-full bg-gray-50 p-6 overflow-y-auto relative">
       <header className="mb-8 flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold text-gray-800">Admin Dashboard</h1>
           <p className="text-gray-500">Overview of Ena Coach Operations</p>
         </div>
         <div className="flex items-center space-x-4">
-             <div className="bg-white p-2 rounded shadow text-sm">
+             <button 
+                onClick={() => setShowAiAssistant(!showAiAssistant)}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-bold transition shadow-sm ${showAiAssistant ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-100'}`}
+             >
+                <i className="fas fa-magic"></i>
+                <span>AI Assistant</span>
+             </button>
+             <div className="bg-white p-2 rounded shadow text-sm hidden md:block">
                 <span className="font-semibold">User:</span> Admin
              </div>
         </div>
       </header>
+      
+      {/* Floating AI Assistant Panel */}
+      {showAiAssistant && (
+          <div className="fixed bottom-6 right-6 z-50 w-96 shadow-2xl animation-fade-in-up">
+              <AdminAssistant />
+          </div>
+      )}
+
+      {/* Manifest Modal */}
+      {showManifestModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
+           <div className="bg-white rounded-lg shadow-xl w-full max-w-lg overflow-hidden">
+               <div className="bg-gray-900 text-white p-4 flex justify-between items-center">
+                   <div>
+                       <h3 className="font-bold text-lg">Passenger Manifest</h3>
+                       <p className="text-xs text-gray-400">Date: {selectedDate}</p>
+                   </div>
+                   <button onClick={() => setShowManifestModal(false)} className="text-white hover:text-red-400">
+                       <i className="fas fa-times"></i>
+                   </button>
+               </div>
+               <div className="p-0 max-h-96 overflow-y-auto">
+                   <table className="w-full text-sm text-left">
+                       <thead className="bg-gray-100 text-gray-600 sticky top-0">
+                           <tr>
+                               <th className="p-3">Seat</th>
+                               <th className="p-3">Passenger</th>
+                               <th className="p-3">Ticket ID</th>
+                               <th className="p-3">Status</th>
+                           </tr>
+                       </thead>
+                       <tbody className="divide-y divide-gray-100">
+                           {manifestData?.passengers.length === 0 ? (
+                               <tr><td colSpan={4} className="p-6 text-center text-gray-400">No bookings for this date.</td></tr>
+                           ) : (
+                               manifestData?.passengers.map((p, i) => (
+                                   <tr key={i} className="hover:bg-gray-50">
+                                       <td className="p-3 font-bold text-red-600">{p.seat}</td>
+                                       <td className="p-3 font-medium">{p.name}</td>
+                                       <td className="p-3 font-mono text-xs">{p.ticketId}</td>
+                                       <td className="p-3">
+                                           <span className={`px-2 py-1 rounded text-xs ${p.boardingStatus === 'boarded' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                                               {p.boardingStatus}
+                                           </span>
+                                       </td>
+                                   </tr>
+                               ))
+                           )}
+                       </tbody>
+                   </table>
+               </div>
+               <div className="p-3 bg-gray-50 text-right border-t border-gray-200">
+                   <button onClick={() => setShowManifestModal(false)} className="px-4 py-2 bg-gray-200 rounded text-gray-700 font-bold hover:bg-gray-300">Close</button>
+               </div>
+           </div>
+        </div>
+      )}
 
       {/* Tab Navigation */}
       <div className="flex space-x-2 mb-6 border-b border-gray-200 overflow-x-auto">
@@ -279,14 +355,22 @@ const AdminDashboard: React.FC = () => {
         </div>
       ) : activeSubTab === 'routes' ? (
         <div className="space-y-6">
-           {/* Controls Header */}
+           {/* Controls Header - DATE PICKER ADDED */}
            <div className="bg-white p-4 rounded-lg shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
-              <div>
+              <div className="flex-1">
                   <h2 className="text-lg font-bold text-gray-800">Fleet & Routes</h2>
-                  <p className="text-xs text-gray-500">Manage pricing and inventory</p>
+                  <div className="flex items-center mt-2">
+                       <label className="text-xs font-bold text-gray-500 uppercase mr-2">Managing Inventory For:</label>
+                       <input 
+                           type="date" 
+                           value={selectedDate} 
+                           onChange={(e) => setSelectedDate(e.target.value)}
+                           className="border border-red-300 rounded px-2 py-1 text-sm font-bold text-red-600 bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-500"
+                       />
+                  </div>
               </div>
-              <div className="flex-1 w-full md:w-auto flex items-center space-x-2">
-                  <div className="relative flex-1">
+              <div className="flex-1 w-full md:w-auto flex items-center space-x-2 justify-end">
+                  <div className="relative w-64">
                       <i className="fas fa-search absolute left-3 top-2.5 text-gray-400"></i>
                       <input 
                         type="text" 
@@ -334,13 +418,14 @@ const AdminDashboard: React.FC = () => {
                      <th className="p-3">Time</th>
                      <th className="p-3">Type</th>
                      <th className="p-3">Price (KES)</th>
-                     <th className="p-3 text-center">Avail</th>
+                     <th className="p-3 text-center">Booked / Cap</th>
                      <th className="p-3 text-right">Actions</th>
                    </tr>
                  </thead>
                  <tbody className="divide-y divide-gray-100">
                    {filteredRoutes.map((route) => {
                       const isEditing = editPriceId === route.id;
+                      const bookedCount = route.capacity - route.availableSeats;
                       return (
                        <tr key={route.id} className="hover:bg-gray-50">
                          <td className="p-3 font-mono text-xs text-gray-400">{route.id}</td>
@@ -364,11 +449,21 @@ const AdminDashboard: React.FC = () => {
                              )}
                          </td>
                          <td className="p-3 text-center">
-                           <span className={`font-bold ${route.availableSeats < 5 ? 'text-red-500' : 'text-green-500'}`}>
-                             {route.availableSeats}
-                           </span>
+                           <div className="flex items-center justify-center space-x-2">
+                               <span className={`font-bold ${bookedCount > 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                                 {bookedCount}
+                               </span>
+                               <span className="text-gray-300">/</span>
+                               <span className="text-gray-500">{route.capacity}</span>
+                           </div>
                          </td>
-                         <td className="p-3 text-right">
+                         <td className="p-3 text-right space-x-2">
+                             <button
+                                onClick={() => handleViewManifest(route.id)}
+                                className="text-xs px-3 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300 font-bold"
+                             >
+                                <i className="fas fa-users mr-1"></i> Passengers
+                             </button>
                              <button 
                                 onClick={() => handlePriceUpdate(route.id)}
                                 className={`text-xs px-3 py-1 rounded font-bold transition ${isEditing ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-blue-50 text-blue-600 hover:bg-blue-100'}`}
@@ -387,7 +482,7 @@ const AdminDashboard: React.FC = () => {
         </div>
       ) : (
         <>
-          {/* Overview Tab (Existing Mock Data Fallback for visual continuity if needed, or update to use real data aggregation) */}
+          {/* Overview Tab */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
             <div className="bg-white p-6 rounded-lg shadow-sm border-l-4 border-blue-500">
               <div className="text-gray-500 text-sm font-medium uppercase">Total Bookings (All Time)</div>
