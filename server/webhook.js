@@ -27,8 +27,9 @@ const DARAJA_CONSUMER_SECRET = process.env.DARAJA_CONSUMER_SECRET || 'IFZQQkXptD
 const DARAJA_PASSKEY = process.env.DARAJA_PASSKEY || '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f';
 const DARAJA_SHORTCODE = process.env.DARAJA_SHORTCODE || '4159923'; // Till Number
 
-// Session Store (Memory)
+// In-Memory Stores
 const userSessions = new Map();
+const paymentStore = new Map();
 
 // --- Initialize Services ---
 const app = express();
@@ -78,8 +79,72 @@ async function triggerSTKPush(phoneNumber, amount) {
       body: JSON.stringify(payload)
     });
     const data = await response.json();
-    return { success: data.ResponseCode === "0", message: data.CustomerMessage || data.errorMessage };
+    if (data.ResponseCode === "0") {
+         paymentStore.set(data.CheckoutRequestID, { status: 'PENDING', phone: formattedPhone, amount: amount });
+         return { success: true, checkoutRequestId: data.CheckoutRequestID, message: "STK Push sent." };
+    }
+    return { success: false, message: data.CustomerMessage || data.errorMessage };
   } catch (error) { return { success: false, message: "Network error." }; }
+}
+
+async function queryDarajaStatus(checkoutRequestId) {
+    const token = await getDarajaToken();
+    if (!token) return { status: 'UNKNOWN' };
+    const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+    const password = Buffer.from(`${DARAJA_SHORTCODE}${DARAJA_PASSKEY}${timestamp}`).toString('base64');
+    
+    try {
+        const response = await fetch('https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query', {
+            method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ "BusinessShortCode": DARAJA_SHORTCODE, "Password": password, "Timestamp": timestamp, "CheckoutRequestID": checkoutRequestId })
+        });
+        const data = await response.json();
+        if (data.ResponseCode === "0") {
+            if (data.ResultCode === "0") return { status: 'COMPLETED', message: data.ResultDesc };
+            if (['1032', '1037', '1'].includes(data.ResultCode)) return { status: 'FAILED', message: data.ResultDesc };
+            return { status: 'PENDING', message: data.ResultDesc };
+        }
+        return { status: 'UNKNOWN' };
+    } catch (e) { return { status: 'UNKNOWN' }; }
+}
+
+// --- Payment Monitor ---
+function scheduleTransactionCheck(checkoutRequestId, userJid) {
+    const TIMEOUT_MS = 120000; // 2 minutes
+    setTimeout(async () => {
+        const payment = paymentStore.get(checkoutRequestId);
+        if (!payment || payment.status === 'COMPLETED') return; 
+
+        console.log(`[Payment Monitor] Timeout check for ${checkoutRequestId}`);
+        
+        // Force Check
+        let finalStatus = payment.status;
+        if (finalStatus === 'PENDING') {
+            const check = await queryDarajaStatus(checkoutRequestId);
+            if (check.status !== 'UNKNOWN') finalStatus = check.status;
+        }
+
+        if (finalStatus === 'PENDING') {
+            paymentStore.set(checkoutRequestId, { ...payment, status: 'TIMEOUT' });
+            await sendWhatsAppMessage(userJid, "⚠️ Payment Session Timed Out. We did not receive your payment. Please try again.");
+        } else if (finalStatus === 'FAILED') {
+             await sendWhatsAppMessage(userJid, "❌ Payment Failed. Please check your balance or PIN and try again.");
+        } else if (finalStatus === 'COMPLETED') {
+             paymentStore.set(checkoutRequestId, { ...payment, status: 'COMPLETED' });
+             await sendWhatsAppMessage(userJid, "✅ Payment Confirmed! Please reply with 'Book Ticket' to finalize your booking.");
+        }
+    }, TIMEOUT_MS);
+}
+
+// --- WhatsApp Helper ---
+async function sendWhatsAppMessage(remoteJid, text) {
+    if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) return;
+    try {
+        await fetch(`${EVOLUTION_API_URL}/message/sendText/${INSTANCE_NAME}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': EVOLUTION_API_TOKEN },
+            body: JSON.stringify({ number: remoteJid, text: text })
+        });
+    } catch(e) { console.error("API Send Error:", e); }
 }
 
 // --- Tools ---
@@ -100,7 +165,12 @@ const initiatePaymentTool = new DynamicStructuredTool({
   schema: z.object({ phoneNumber: z.string(), amount: z.number() }),
   func: async ({ phoneNumber, amount }) => {
      const res = await triggerSTKPush(phoneNumber, amount);
-     if (res.success) return JSON.stringify({ status: 'initiated', message: "STK Push sent." });
+     if (res.success) {
+         // Schedule Timeout Monitor
+         const jid = phoneNumber.replace('+', '').replace(/^0/, '254') + "@s.whatsapp.net";
+         scheduleTransactionCheck(res.checkoutRequestId, jid);
+         return JSON.stringify({ status: 'initiated', message: "STK Push sent." });
+     }
      return JSON.stringify(res);
   },
 });
@@ -157,12 +227,8 @@ app.post('/webhook', async (req, res) => {
          userSessions.set(remoteJid, history);
          
          // 4. Send Reply
-         if (EVOLUTION_API_URL && EVOLUTION_API_TOKEN) {
-             await fetch(`${EVOLUTION_API_URL}/message/sendText/${INSTANCE_NAME}`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': EVOLUTION_API_TOKEN },
-                body: JSON.stringify({ number: remoteJid, text: result.output })
-            });
-         }
+         await sendWhatsAppMessage(remoteJid, result.output);
+
       } catch(e) { console.error("Agent Error:", e); }
   })();
 
