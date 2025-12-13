@@ -52,6 +52,7 @@ app.use(bodyParser.json());
 
 // --- In-Memory Stores ---
 const debugOutbox = []; 
+const webhookLogs = []; // Stores incoming webhook requests for debugging
 const paymentStore = new Map(); 
 const userSessions = new Map();
 
@@ -538,9 +539,28 @@ app.post('/api/broadcast', async (req, res) => {
 // Debug Endpoints
 app.get('/api/debug/messages', (req, res) => res.json(debugOutbox));
 app.post('/api/debug/clear', (req, res) => { debugOutbox.length = 0; res.sendStatus(200); });
+app.get('/api/debug/webhook-logs', (req, res) => res.json(webhookLogs));
+app.post('/api/debug/clear-webhook', (req, res) => { webhookLogs.length = 0; res.sendStatus(200); });
 
 // --- Webhook Endpoint ---
 app.post('/webhook', async (req, res) => {
+    // 1. Log Incoming Request (DEBUGGING)
+    try {
+        const logEntry = {
+            id: Date.now().toString(),
+            timestamp: new Date().toISOString(),
+            method: req.method,
+            type: req.body?.type || 'unknown',
+            sender: req.body?.data?.key?.remoteJid || 'unknown',
+            content: req.body?.data?.message || req.body,
+            raw: req.body // Store full body for inspection
+        };
+        webhookLogs.unshift(logEntry);
+        if (webhookLogs.length > 50) webhookLogs.pop(); // Keep last 50
+    } catch (e) {
+        console.error("Error logging webhook:", e);
+    }
+
     const { type, data } = req.body;
     if (type !== 'messages.upsert' || !data.message) return res.status(200).send('OK');
     

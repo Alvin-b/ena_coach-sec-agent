@@ -25,6 +25,9 @@ const WhatsAppConfig: React.FC = () => {
   const [simMessage, setSimMessage] = useState('Hi, do you have a bus to Kisumu?');
   const [simLoading, setSimLoading] = useState(false);
   const [debugMessages, setDebugMessages] = useState<any[]>([]);
+  
+  // Webhook Monitor State
+  const [webhookLogs, setWebhookLogs] = useState<any[]>([]);
 
   const addLog = (msg: string) => setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
 
@@ -34,8 +37,11 @@ const WhatsAppConfig: React.FC = () => {
           setServerDomain(window.location.origin);
       }
 
-      // Poll for debug messages
-      const interval = setInterval(fetchDebugMessages, 2000);
+      // Poll for debug messages and webhook logs
+      const interval = setInterval(() => {
+          fetchDebugMessages();
+          fetchWebhookLogs();
+      }, 2000);
       return () => clearInterval(interval);
   }, []);
 
@@ -49,9 +55,21 @@ const WhatsAppConfig: React.FC = () => {
       } catch (e) { /* Ignore errors in polling */ }
   };
 
+  const fetchWebhookLogs = async () => {
+      try {
+          const res = await fetch('/api/debug/webhook-logs');
+          if (res.ok) setWebhookLogs(await res.json());
+      } catch (e) { }
+  };
+
   const handleClearDebug = async () => {
       await fetch('/api/debug/clear', { method: 'POST' });
       setDebugMessages([]);
+  };
+
+  const handleClearWebhookLogs = async () => {
+      await fetch('/api/debug/clear-webhook', { method: 'POST' });
+      setWebhookLogs([]);
   };
 
   const handleSave = () => {
@@ -190,8 +208,61 @@ const WhatsAppConfig: React.FC = () => {
 
   return (
     <div className="space-y-8">
+      
+      {/* 4. Live Webhook Traffic (Moved to Top for Visibility) */}
+      <div className="bg-blue-50 p-6 rounded-lg shadow-sm border border-blue-200">
+         <div className="flex justify-between items-center mb-4">
+             <h2 className="text-xl font-bold text-blue-800 flex items-center">
+                 <i className="fas fa-network-wired text-blue-600 mr-2"></i> Live Webhook Monitor
+                 <span className="ml-3 flex items-center">
+                    <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse mr-1"></span>
+                    <span className="text-xs font-normal text-blue-600">Listening...</span>
+                 </span>
+             </h2>
+             <button onClick={handleClearWebhookLogs} className="text-xs text-blue-600 hover:text-blue-800 font-bold bg-white px-3 py-1 rounded shadow-sm">
+                 Clear Traffic
+             </button>
+         </div>
+         <p className="text-sm text-blue-900 mb-4">
+             Real-time log of incoming requests to <code>/webhook</code>. Use this to verify Evolution API is successfully reaching your app.
+         </p>
+         
+         <div className="bg-gray-900 text-green-400 font-mono text-xs p-4 rounded-lg h-64 overflow-y-auto shadow-inner">
+             {webhookLogs.length === 0 ? (
+                 <div className="h-full flex flex-col items-center justify-center text-gray-500">
+                     <i className="fas fa-wifi text-2xl mb-2 opacity-20"></i>
+                     <p>Waiting for incoming data...</p>
+                 </div>
+             ) : (
+                 <div className="space-y-4">
+                     {webhookLogs.map((log, idx) => (
+                         <div key={idx} className="border-l-2 border-blue-500 pl-3">
+                             <div className="flex justify-between text-gray-400 mb-1">
+                                 <span className="font-bold text-blue-300">HTTP {log.method}</span>
+                                 <span>{new Date(log.timestamp).toLocaleTimeString()}</span>
+                             </div>
+                             <div className="mb-1">
+                                 <span className="text-gray-500 uppercase mr-2">Type:</span> 
+                                 <span className="text-yellow-300">{log.type}</span>
+                             </div>
+                             <div className="mb-1">
+                                 <span className="text-gray-500 uppercase mr-2">Sender:</span> 
+                                 <span className="text-white">{log.sender}</span>
+                             </div>
+                             <details className="cursor-pointer">
+                                 <summary className="text-gray-500 hover:text-white">View Payload</summary>
+                                 <pre className="mt-2 text-[10px] text-gray-300 whitespace-pre-wrap bg-gray-800 p-2 rounded">
+                                     {JSON.stringify(log.raw, null, 2)}
+                                 </pre>
+                             </details>
+                         </div>
+                     ))}
+                 </div>
+             )}
+         </div>
+      </div>
 
-      {/* WEBHOOK SIMULATOR (Added for Testing) */}
+      {/* WEBHOOK SIMULATOR */}
       <div className="bg-purple-50 p-6 rounded-lg shadow-sm border border-purple-200">
          <div className="flex justify-between items-center mb-4">
             <h2 className="text-xl font-bold text-purple-800 flex items-center">
