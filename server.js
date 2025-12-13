@@ -468,6 +468,7 @@ const prompt = ChatPromptTemplate.fromMessages([
    - NEVER book a ticket without 'verifyPayment' returning COMPLETED.
    `],
   ["human", "{input}"],
+  ["placeholder", "{agent_scratchpad}"], // CRITICAL FIX: This allows LangChain to inject tool outputs
 ]);
 
 const agent = createToolCallingAgent({ llm, tools, prompt });
