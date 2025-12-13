@@ -32,6 +32,8 @@ export interface Complaint {
   severity: 'low' | 'medium' | 'high';
   status: 'open' | 'resolved';
   timestamp: string;
+  incidentDate?: string;
+  routeInfo?: string;
 }
 
 export interface ChatMessage {

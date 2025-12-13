@@ -432,6 +432,23 @@ const bookTicketTool = new DynamicStructuredTool({
   },
 });
 
+const logComplaintTool = new DynamicStructuredTool({
+  name: "logComplaint",
+  description: "Log a customer complaint. You must ask for the date/time of incident and route details if they are not provided.",
+  schema: z.object({ 
+    issue: z.string(), 
+    severity: z.enum(['low', 'medium', 'high']), 
+    customerName: z.string(),
+    incidentDate: z.string().describe("When the incident happened"),
+    routeInfo: z.string().optional().describe("Which route or bus was involved")
+  }),
+  func: async ({ issue, severity, customerName, incidentDate, routeInfo }) => {
+      // In a real DB we would save this. For now just ack.
+      console.log(`[Complaint] ${customerName} (${severity}): ${issue} @ ${incidentDate} on ${routeInfo || 'N/A'}`);
+      return JSON.stringify({ status: 'logged', ticketId: `CMP-${Date.now()}` });
+  },
+});
+
 const trackBusTool = new DynamicStructuredTool({
     name: "trackBus",
     description: "Get real-time bus location.",
@@ -439,7 +456,7 @@ const trackBusTool = new DynamicStructuredTool({
     func: async ({ query }) => JSON.stringify(await fetchRealBusLocation(query))
 });
 
-const tools = [searchRoutesTool, initiatePaymentTool, verifyPaymentTool, bookTicketTool, trackBusTool];
+const tools = [searchRoutesTool, initiatePaymentTool, verifyPaymentTool, bookTicketTool, trackBusTool, logComplaintTool];
 
 // --- AI Agent ---
 const llm = new ChatGoogleGenerativeAI({
@@ -452,6 +469,7 @@ const prompt = ChatPromptTemplate.fromMessages([
   ["system", `You are a human customer service rep at Ena Coach.
    
    CURRENT TIME: {current_time}
+   USER NAME: {user_name}
    
    PAYMENT FLOW (STRICT):
    1. Agree on Route & Price.
@@ -464,6 +482,11 @@ const prompt = ChatPromptTemplate.fromMessages([
    8. IF 'verifyPayment' returns 'PENDING': Tell user "It hasn't reflected yet. Please wait a moment."
    9. IF 'verifyPayment' returns 'FAILED': Tell user "Payment failed: [Reason]. Should we try again?"
    
+   COMPLAINT HANDLING:
+   - When logging a complaint, you MUST ask for the **date/time of the incident** and the **specific route or bus details** if the user has not provided them.
+   - Only call 'logComplaint' once you have these details, or if the user explicitly says they don't remember the route.
+   - You can use the 'user_name' to fill in the customer name if needed, or ask them.
+   
    SECURITY:
    - NEVER book a ticket without 'verifyPayment' returning COMPLETED.
    `],
@@ -471,7 +494,13 @@ const prompt = ChatPromptTemplate.fromMessages([
   ["placeholder", "{agent_scratchpad}"], // CRITICAL FIX: This allows LangChain to inject tool outputs
 ]);
 
-const agent = createToolCallingAgent({ llm, tools, prompt });
+// CRITICAL FIX: Explicitly bind tools to the LLM and await the agent creation
+const agent = await createToolCallingAgent({ 
+    llm: llm.bindTools(tools), 
+    tools, 
+    prompt 
+});
+
 const agentExecutor = new AgentExecutor({ agent, tools, verbose: true });
 
 // --- Server Routes ---
@@ -491,14 +520,19 @@ app.get('/api/bus-location/:query', async (req, res) => {
 // Helper for WhatsApp
 async function handleIncomingMessage(payload) {
   if (payload.type !== 'messages.upsert') return;
-  const { key, message } = payload.data;
+  const { key, message, pushName } = payload.data;
   if (key.fromMe || !message) return;
   const text = message.conversation || message.extendedTextMessage?.text;
   if (!text) return;
   
   try {
     const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
-    const result = await agentExecutor.invoke({ input: text, current_time: now });
+    const user = pushName || "Customer";
+    const result = await agentExecutor.invoke({ 
+        input: text, 
+        current_time: now,
+        user_name: user
+    });
     await sendWhatsAppMessage(key.remoteJid, result.output);
   } catch (error) { console.error("Agent Error:", error); }
 }

@@ -154,8 +154,14 @@ const bookTicketTool = new DynamicStructuredTool({
 
 const logComplaintTool = new DynamicStructuredTool({
   name: "logComplaint",
-  description: "Log complaint.",
-  schema: z.object({ issue: z.string(), severity: z.enum(['low', 'medium', 'high']), customerName: z.string() }),
+  description: "Log complaint. Ask for date and route.",
+  schema: z.object({ 
+      issue: z.string(), 
+      severity: z.enum(['low', 'medium', 'high']), 
+      customerName: z.string(),
+      incidentDate: z.string().describe("Date of incident"),
+      routeInfo: z.string().optional().describe("Route or Bus ID")
+  }),
   func: async () => JSON.stringify({ status: 'logged' }),
 });
 
@@ -188,7 +194,13 @@ const prompt = ChatPromptTemplate.fromMessages([
   ["placeholder", "{agent_scratchpad}"],
 ]);
 
-const agent = createToolCallingAgent({ llm, tools, prompt });
+// CRITICAL FIX: Bind tools & await
+const agent = await createToolCallingAgent({ 
+    llm: llm.bindTools(tools), 
+    tools, 
+    prompt 
+});
+
 const agentExecutor = new AgentExecutor({ agent, tools, verbose: true });
 
 app.post('/webhook', (req, res) => {

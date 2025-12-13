@@ -24,7 +24,7 @@ interface MockBackendContextType {
   verifyPayment: (checkoutRequestId: string) => Promise<any>;
   
   bookTicket: (passengerName: string, routeId: string, phoneNumber: string) => Ticket | null;
-  logComplaint: (customerName: string, issue: string, severity: 'low' | 'medium' | 'high') => string;
+  logComplaint: (customerName: string, issue: string, severity: 'low' | 'medium' | 'high', incidentDate?: string, routeInfo?: string) => string;
   
   // Admin Actions
   validateTicket: (ticketId: string) => { success: boolean; message: string; ticket?: Ticket };
@@ -152,7 +152,7 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
   };
 
-  const logComplaint = (customerName: string, issue: string, severity: 'low' | 'medium' | 'high') => {
+  const logComplaint = (customerName: string, issue: string, severity: 'low' | 'medium' | 'high', incidentDate?: string, routeInfo?: string) => {
     const newComplaint: Complaint = {
       id: `CMP-${Math.floor(Math.random() * 10000)}`,
       customerName,
@@ -160,6 +160,8 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
       severity,
       status: 'open',
       timestamp: new Date().toISOString(),
+      incidentDate,
+      routeInfo
     };
     setComplaints((prev) => [newComplaint, ...prev]);
     return newComplaint.id;

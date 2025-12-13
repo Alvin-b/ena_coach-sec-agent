@@ -55,15 +55,17 @@ const bookTicketTool: FunctionDeclaration = {
 
 const logComplaintTool: FunctionDeclaration = {
   name: 'logComplaint',
-  description: 'Log a customer complaint.',
+  description: 'Log a customer complaint. You must ask for the date/time of the incident and the route details if they are not provided.',
   parameters: {
     type: Type.OBJECT,
     properties: {
       issue: { type: Type.STRING },
       severity: { type: Type.STRING, enum: ['low', 'medium', 'high'] },
       customerName: { type: Type.STRING },
+      incidentDate: { type: Type.STRING, description: 'Date and time when the incident occurred.' },
+      routeInfo: { type: Type.STRING, description: 'The bus route or number associated with the complaint.' },
     },
-    required: ['issue', 'severity', 'customerName'],
+    required: ['issue', 'severity', 'customerName', 'incidentDate'],
   },
 };
 
@@ -167,7 +169,7 @@ export class GeminiService {
                 functionResponse = { error: "Booking failed." };
             }
           } else if (name === 'logComplaint') {
-            const complaintId = functions.logComplaint(args.customerName, args.issue, args.severity);
+            const complaintId = functions.logComplaint(args.customerName, args.issue, args.severity, args.incidentDate, args.routeInfo);
             functionResponse = { complaintId, status: 'logged' };
           } else if (name === 'trackBus') {
             const status = await functions.getBusStatus(args.query);

@@ -304,7 +304,10 @@ const AdminDashboard: React.FC = () => {
                       </span>
                     </div>
                     <p className="text-sm text-gray-600 mb-1">{complaint.issue}</p>
-                    <p className="text-xs text-gray-400">ID: {complaint.id}</p>
+                    <div className="text-xs text-gray-400 flex justify-between">
+                        <span>ID: {complaint.id}</span>
+                        {complaint.incidentDate && <span>Incident: {complaint.incidentDate} {complaint.routeInfo && `(${complaint.routeInfo})`}</span>}
+                    </div>
                   </li>
                 ))}
                 {activeComplaints.length === 0 && <li className="p-4 text-center text-gray-400 text-sm">No active complaints.</li>}
