@@ -26,6 +26,13 @@ export interface Ticket {
   qrCodeUrl: string;
 }
 
+export interface Contact {
+  phoneNumber: string;
+  name: string;
+  lastTravelDate: string;
+  totalTrips: number;
+}
+
 export interface Complaint {
   id: string;
   customerName: string;

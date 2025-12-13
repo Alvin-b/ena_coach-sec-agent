@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { BusRoute, Ticket, Complaint, User, BusLocation } from '../types';
-import { ALL_ROUTES } from '../data/enaRoutes';
+import { BusRoute, Ticket, Complaint, User, BusLocation, Contact } from '../types';
 
 export interface WhatsAppConfigData {
   apiUrl: string;
@@ -14,25 +13,31 @@ interface MockBackendContextType {
   complaints: Complaint[];
   currentUser: User | null;
   whatsappConfig: WhatsAppConfigData;
+  contacts: Contact[];
   
   // Actions
   searchRoutes: (origin: string, destination: string) => BusRoute[];
+  fetchAllRoutes: () => Promise<void>;
+  updateRoutePrice: (routeId: string, newPrice: number) => Promise<boolean>;
+  addRoute: (routeData: Partial<BusRoute>) => Promise<boolean>;
   
-  // New Inventory Action
+  // Inventory
   getInventory: (date: string) => Promise<BusRoute[]>;
-
   checkSeats: (routeId: string) => number;
   
-  // New Payment Flow Actions
+  // Payment
   initiatePayment: (phoneNumber: string, amount: number) => Promise<any>;
   verifyPayment: (checkoutRequestId: string) => Promise<any>;
   
+  // Booking
   bookTicket: (passengerName: string, routeId: string, phoneNumber: string, checkoutRequestId?: string) => Ticket | null;
+  validateTicket: (ticketId: string) => { success: boolean; message: string; ticket?: Ticket };
+  
+  // CRM
+  fetchContacts: () => Promise<void>;
+  broadcastMessage: (message: string, contactList: string[]) => Promise<{success: boolean, count: number}>;
   logComplaint: (customerName: string, issue: string, severity: 'low' | 'medium' | 'high', incidentDate?: string, routeInfo?: string) => string;
   
-  // Admin Actions
-  validateTicket: (ticketId: string) => { success: boolean; message: string; ticket?: Ticket };
-
   // Auth
   login: (identifier: string, password: string) => Promise<boolean>;
   register: (name: string, email: string, phoneNumber: string, password: string) => Promise<boolean>;
@@ -49,17 +54,63 @@ interface MockBackendContextType {
 const MockBackendContext = createContext<MockBackendContextType | undefined>(undefined);
 
 export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [routes, setRoutes] = useState<BusRoute[]>(ALL_ROUTES);
+  const [routes, setRoutes] = useState<BusRoute[]>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [complaints, setComplaints] = useState<Complaint[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [contacts, setContacts] = useState<Contact[]>([]);
   
   const [whatsappConfig, setWhatsappConfig] = useState<WhatsAppConfigData>({
     apiUrl: 'https://api.evolution-api.com',
     apiToken: '',
     instanceName: 'EnaCoachInstance'
   });
+
+  useEffect(() => {
+      fetchAllRoutes();
+      fetchContacts();
+  }, []);
+
+  const fetchAllRoutes = async () => {
+      try {
+          const res = await fetch('/api/routes');
+          if (res.ok) {
+              const data = await res.json();
+              setRoutes(data);
+          }
+      } catch (e) { console.error(e); }
+  };
+
+  const updateRoutePrice = async (routeId: string, newPrice: number) => {
+      try {
+          const res = await fetch(`/api/routes/${routeId}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ price: newPrice })
+          });
+          if (res.ok) {
+              await fetchAllRoutes();
+              return true;
+          }
+      } catch (e) { console.error(e); }
+      return false;
+  };
+
+  const addRoute = async (routeData: Partial<BusRoute>) => {
+      try {
+          const res = await fetch('/api/routes', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(routeData)
+          });
+          if (res.ok) {
+              await fetchAllRoutes();
+              return true;
+          }
+      } catch (e) { console.error(e); }
+      return false;
+  };
 
   const searchRoutes = (origin: string, destination: string) => {
     const termOrigin = origin.toLowerCase();
@@ -68,7 +119,7 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return routes.filter((r) => {
       const routeOrigin = r.origin.toLowerCase();
       const routeDest = r.destination.toLowerCase();
-      const stops = r.stops.map(s => s.toLowerCase());
+      const stops = r.stops ? r.stops.map(s => s.toLowerCase()) : [];
       if (routeOrigin.includes(termOrigin) && routeDest.includes(termDest)) return true;
       if (routeOrigin.includes(termOrigin) && stops.includes(termDest)) return true;
       return false;
@@ -81,11 +132,9 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
           const res = await fetch(`/api/inventory?date=${date}`);
           if (res.ok) {
               const data = await res.json();
-              // Merge server stats with local static routes if needed, or just return server data
-              // Server returns data with 'booked' and 'available' keys
               return data.map((d: any) => ({
                   ...d,
-                  stops: [], // Server simplified routes don't have stops array, optional here
+                  stops: d.stops || [], 
                   availableSeats: d.available,
                   capacity: d.capacity
               }));
@@ -196,6 +245,33 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return newComplaint.id;
   };
 
+  // --- CRM ---
+  const fetchContacts = async () => {
+      try {
+          const res = await fetch('/api/contacts');
+          if (res.ok) {
+              const data = await res.json();
+              setContacts(data);
+          }
+      } catch (e) { console.error(e); }
+  };
+
+  const broadcastMessage = async (message: string, contactList: string[]) => {
+      try {
+          const res = await fetch('/api/broadcast', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ message, contacts: contactList })
+          });
+          if (res.ok) {
+              const data = await res.json();
+              return { success: true, count: data.count };
+          }
+      } catch (e) { console.error(e); }
+      return { success: false, count: 0 };
+  };
+
+  // --- Auth ---
   const login = async (identifier: string, password: string): Promise<boolean> => {
     await new Promise(r => setTimeout(r, 1000));
     const user = users.find(u => (u.email === identifier || u.phoneNumber === identifier) && u.password === password);
@@ -239,10 +315,10 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
   return (
     <MockBackendContext.Provider
       value={{
-        routes, tickets, complaints, currentUser, whatsappConfig,
+        routes, tickets, complaints, currentUser, whatsappConfig, contacts,
         searchRoutes, checkSeats, initiatePayment, verifyPayment, bookTicket, logComplaint, validateTicket,
         login, register, logout, getUserTickets, getBusStatus, saveWhatsAppConfig,
-        getInventory
+        getInventory, updateRoutePrice, addRoute, fetchAllRoutes, fetchContacts, broadcastMessage
       }}
     >
       {children}
