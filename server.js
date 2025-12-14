@@ -29,13 +29,17 @@ const API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
 const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL ? process.env.EVOLUTION_API_URL.replace(/\/$/, '') : '';
 const EVOLUTION_API_TOKEN = process.env.EVOLUTION_API_TOKEN;
 const INSTANCE_NAME = process.env.INSTANCE_NAME;
-const SERVER_URL = process.env.SERVER_URL || `http://localhost:${PORT}`; 
+
+// Server URL Detection (Critical for Callbacks)
+// Prioritize explicit SERVER_URL, then Render's external URL, then localhost
+const SERVER_URL = process.env.SERVER_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 
 // Daraja Config (M-Pesa)
+// Default to Standard Sandbox Paybill (174379) if not provided
 const DARAJA_CONSUMER_KEY = process.env.DARAJA_CONSUMER_KEY || 'A9QGd46yfsnrgM027yIGE0UDiUroPZdHr8CiTRs8NGTFaXH8';
 const DARAJA_CONSUMER_SECRET = process.env.DARAJA_CONSUMER_SECRET || 'IFZQQkXptDOUkGx6wZGEeiLADggUy39NUJzEPzhU1EytUBg5JmA3oR3OGvRC6wsb';
-const DARAJA_PASSKEY = process.env.DARAJA_PASSKEY || '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f';
-const DARAJA_SHORTCODE = process.env.DARAJA_SHORTCODE || '4159923'; // Till Number
+const DARAJA_PASSKEY = process.env.DARAJA_PASSKEY || 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919';
+const DARAJA_SHORTCODE = process.env.DARAJA_SHORTCODE || '174379'; 
 const TICKET_SECRET = process.env.TICKET_SECRET || 'ENA_SUPER_SECRET_KEY_2025';
 
 // --- Initialize App ---
@@ -189,8 +193,8 @@ async function getDarajaToken() {
 async function triggerSTKPush(phoneNumber, amount) {
   let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
   
-  // PRODUCTION: Removing all simulation fallbacks. 
-  // Requires valid SERVER_URL (e.g. from Render) for callbacks.
+  // Use dynamically detected SERVER_URL for callbacks
+  const callbackUrl = `${SERVER_URL.replace(/\/$/, '')}/callback/mpesa`;
 
   try {
       const token = await getDarajaToken();
@@ -202,8 +206,8 @@ async function triggerSTKPush(phoneNumber, amount) {
       const password = Buffer.from(`${DARAJA_SHORTCODE}${DARAJA_PASSKEY}${timestamp}`).toString('base64');
       const url = 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
 
-      const transactionType = DARAJA_SHORTCODE === '4159923' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline';
-      const callbackUrl = `${SERVER_URL.replace(/\/$/, '')}/callback/mpesa`;
+      // Use CustomerPayBillOnline for the standard 174379 sandbox shortcode
+      const transactionType = DARAJA_SHORTCODE === '174379' ? 'CustomerPayBillOnline' : 'CustomerBuyGoodsOnline';
 
       const payload = {
         "BusinessShortCode": DARAJA_SHORTCODE, 
@@ -219,7 +223,8 @@ async function triggerSTKPush(phoneNumber, amount) {
         "TransactionDesc": "Bus Ticket"
       };
 
-      console.log(`[STK-PUSH] Initiating to ${formattedPhone} for ${amount}. Callback: ${callbackUrl}`);
+      console.log(`[STK-PUSH] Initiating to ${formattedPhone} for KES ${amount}`);
+      console.log(`[STK-PUSH] Callback URL registered: ${callbackUrl}`);
 
       const response = await fetch(url, {
         method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -234,7 +239,7 @@ async function triggerSTKPush(phoneNumber, amount) {
           return { success: true, checkoutRequestId: data.CheckoutRequestID, message: "STK Push sent to your phone." };
       }
       
-      return { success: false, message: data.errorMessage || "Failed to initiate payment." };
+      return { success: false, message: data.errorMessage || data.CustomerMessage || "Failed to initiate payment." };
 
   } catch (error) { 
       console.error("[STK-PUSH] Network Error:", error);
@@ -263,7 +268,7 @@ async function queryDarajaStatus(checkoutRequestId) {
                  paymentStore.set(checkoutRequestId, { ...local, status: 'COMPLETED' });
                  return { status: 'COMPLETED', message: data.ResultDesc };
             }
-            if (['1032', '1037', '1'].includes(data.ResultCode)) {
+            if (['1032', '1037', '1', '2001'].includes(data.ResultCode)) {
                 paymentStore.set(checkoutRequestId, { ...local, status: 'FAILED' });
                 return { status: 'FAILED', message: data.ResultDesc };
             }
@@ -288,14 +293,28 @@ async function sendWhatsAppMessage(remoteJid, text) {
 }
 
 function scheduleTransactionCheck(checkoutRequestId, userJid) {
-    const TIMEOUT_MS = 60000; // 1 min check
+    const TIMEOUT_MS = 120000; // 2 minute timeout check
+    console.log(`[Payment] Scheduling check for ${checkoutRequestId} in 2 minutes.`);
+    
     setTimeout(async () => {
+        // 1. Check local status first (in case callback already handled it)
+        const local = paymentStore.get(checkoutRequestId);
+        if (local && local.status === 'COMPLETED') {
+            return; // Already done, no need to alert
+        }
+        
+        // 2. Double check with Daraja one last time
         const check = await queryDarajaStatus(checkoutRequestId);
+        
         if (check.status === 'PENDING') {
-            await sendWhatsAppMessage(userJid, "⏳ Payment is taking longer than usual. Please ensure you entered your PIN.");
+            // Update status to timeout so we don't process it later if it comes in super late (optional logic)
+            if (local) paymentStore.set(checkoutRequestId, { ...local, status: 'TIMEOUT' });
+            
+            await sendWhatsAppMessage(userJid, "⚠️ Payment Session Timed Out.\n\nWe did not receive a confirmation in time. If you have already paid, please contact support. Otherwise, please reply with 'Book Ticket' to try again.");
         } else if (check.status === 'FAILED') {
             await sendWhatsAppMessage(userJid, "❌ Payment Failed/Cancelled. Please try again.");
         } else if (check.status === 'COMPLETED') {
+            // Late success
             await sendWhatsAppMessage(userJid, "✅ Payment Confirmed! Processing your ticket...");
         }
     }, TIMEOUT_MS);
@@ -545,15 +564,18 @@ app.post('/api/debug/clear-webhook', (req, res) => { webhookLogs.length = 0; res
 // --- Unified Webhook Handler ---
 const handleWebhook = async (req, res) => {
     // 1. Log Incoming Request (DEBUGGING)
+    const eventType = req.body?.type || req.body?.event; // Support both
+    const { data } = req.body || {};
+
     try {
         const logEntry = {
             id: Date.now().toString(),
             timestamp: new Date().toISOString(),
             method: req.method,
-            path: req.originalUrl || req.url, // Log the exact path accessed
-            type: req.body?.type || 'unknown',
-            sender: req.body?.data?.key?.remoteJid || 'unknown',
-            content: req.body?.data?.message || req.body,
+            path: req.originalUrl || req.url,
+            type: eventType || 'unknown',
+            sender: data?.key?.remoteJid || req.body?.sender || 'unknown',
+            content: data?.message || req.body,
             raw: req.body
         };
         webhookLogs.unshift(logEntry);
@@ -562,17 +584,23 @@ const handleWebhook = async (req, res) => {
         console.error("Error logging webhook:", e);
     }
 
-    const { type, data } = req.body || {};
-    
     // Check if valid Evolution API upsert (robust check)
-    if (!type || type !== 'messages.upsert' || !data || !data.message) {
-        // Fallback or heartbeat check
+    // Evolution API sends 'type' or 'event' property depending on version/config
+    if (!eventType || eventType !== 'messages.upsert' || !data || !data.message) {
         return res.status(200).send('OK');
     }
     
+    // Prevent self-loops: If the message is from me, ignore it.
+    if (data.key.fromMe) {
+        return res.status(200).send('OK');
+    }
+
     const text = data.message.conversation || data.message.extendedTextMessage?.text;
     if (!text) return res.status(200).send('OK');
     
+    // Use the JID provided in the key. If it's a LID (Linked Device ID), Evolution API handles it.
+    // However, if there is a 'remoteJidAlt' (often the phone number JID), we can optionally log or use it,
+    // but replying to the sender JID (data.key.remoteJid) is standard.
     const remoteJid = data.key.remoteJid;
   
     // Run AI in background
@@ -612,15 +640,17 @@ app.post('/api/webhook', handleWebhook);
 
 // --- M-Pesa Callback Endpoint ---
 app.post('/callback/mpesa', (req, res) => {
+    console.log("[M-Pesa Callback] Hit Received!");
+    
     try {
         const { Body } = req.body;
         if (!Body || !Body.stkCallback) {
-             console.log("Invalid M-Pesa Callback", req.body);
+             console.log("[M-Pesa Callback] Invalid Body:", JSON.stringify(req.body));
              return res.sendStatus(200);
         }
 
         const { CheckoutRequestID, ResultCode, ResultDesc } = Body.stkCallback;
-        console.log(`[M-Pesa Callback] ${CheckoutRequestID} - Code: ${ResultCode} - ${ResultDesc}`);
+        console.log(`[M-Pesa Callback] ID: ${CheckoutRequestID} | Code: ${ResultCode} | Desc: ${ResultDesc}`);
 
         const currentPayment = paymentStore.get(CheckoutRequestID);
         if (currentPayment) {
@@ -631,8 +661,9 @@ app.post('/callback/mpesa', (req, res) => {
              paymentStore.set(CheckoutRequestID, { status: ResultCode === 0 ? 'COMPLETED' : 'FAILED', resultDesc: ResultDesc, timestamp: Date.now() });
         }
     } catch (e) {
-        console.error("Callback Error", e);
+        console.error("[M-Pesa Callback] Error processing:", e);
     }
+    // Always return 200 OK to Safaricom otherwise they retry
     res.sendStatus(200);
 });
 
@@ -648,5 +679,6 @@ app.get('*', (req, res) => {
 // --- Start Server ---
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
+    console.log(`Callback URL Root: ${SERVER_URL}`);
     console.log(`Gemini Key Present: ${!!API_KEY}`);
 });
