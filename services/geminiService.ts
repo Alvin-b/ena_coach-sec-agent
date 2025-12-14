@@ -161,12 +161,22 @@ export class GeminiService {
   private adminChat: Chat;
 
   constructor(apiKey: string) {
+    if (!apiKey) console.warn("GeminiService initialized without API Key. Calls will fail.");
     this.ai = new GoogleGenAI({ apiKey });
     
+    // Safety Settings to prevent false blocks
+    const safetySettings = [
+      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+    ];
+
     // 1. Customer Chat Instance
     this.customerChat = this.ai.chats.create({
       model: 'gemini-2.5-flash',
       config: {
+        safetySettings,
         systemInstruction: `You are a Professional Booking Agent for Ena Coach.
 
         **CRITICAL SECURITY & CONFIRMATION PROTOCOL**:
@@ -197,6 +207,7 @@ export class GeminiService {
     this.adminChat = this.ai.chats.create({
         model: 'gemini-2.5-flash',
         config: {
+            safetySettings,
             systemInstruction: `You are an Intelligent Operations Manager Assistant for Ena Coach.
             Your role is to help the admin analyze data, manage the fleet, and make decisions.
             
@@ -306,7 +317,11 @@ export class GeminiService {
 
     } catch (error) {
       console.error("Gemini Customer Error:", error);
-      return { text: "Sorry, I lost connection. Can you repeat that?" };
+      // Return details to UI if it's a known error type, otherwise generic
+      if (error instanceof Error && error.message.includes('API key')) {
+        return { text: "Error: API Key is invalid or missing in configuration." };
+      }
+      return { text: "Sorry, I lost connection to the agent. Please check the console for details." };
     }
   }
 
@@ -378,7 +393,7 @@ export class GeminiService {
         return response.text || "Processing completed.";
       } catch (error) {
           console.error("Gemini Admin Error:", error);
-          return "I encountered an error processing your administrative request.";
+          return "I encountered an error processing your administrative request. Check console for details.";
       }
   }
 }

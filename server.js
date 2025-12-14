@@ -331,8 +331,10 @@ async function getAgentExecutor() {
     agentExecutorPromise = (async () => {
         if (!API_KEY) {
             console.error("[Agent] CRITICAL: No API Key found for Gemini.");
-            throw new Error("API Key missing");
+            throw new Error("API Key missing in server environment");
         }
+        
+        console.log("[Agent] Initializing new Agent Executor...");
         
         // Tools definition
         const searchRoutesTool = new DynamicStructuredTool({
@@ -408,10 +410,10 @@ async function getAgentExecutor() {
         const llm = new ChatGoogleGenerativeAI({
             model: "gemini-2.5-flash",
             apiKey: API_KEY, 
-            temperature: 0.3, // Slightly higher temperature for better conversational flow
+            temperature: 0.3,
             maxOutputTokens: 300,
-            maxRetries: 2, // Important for concurrency/stability
-            safetySettings: [ // Permissive safety settings to prevent false positives blocking functionality
+            maxRetries: 2,
+            safetySettings: [
                 { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
                 { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
                 { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
@@ -439,9 +441,14 @@ async function getAgentExecutor() {
         
         const agent = await createToolCallingAgent({ llm: llm.bindTools(tools), tools, prompt });
         
-        // Disable verbose logging for production speed
         return new AgentExecutor({ agent, tools, verbose: false });
     })();
+
+    // Resilience: If initialization fails, reset the promise so we can try again next request
+    agentExecutorPromise.catch(err => {
+        console.error("[Agent] Initialization Failed. Resetting promise.", err);
+        agentExecutorPromise = null;
+    });
 
     return agentExecutorPromise;
 }
@@ -655,9 +662,9 @@ const handleWebhook = async (req, res) => {
            
            await sendWhatsAppMessage(remoteJid, result.output);
         } catch(e) { 
-            console.error("Agent Error Details:", e); 
-            // Only send error message if it's not a transient networking glitch, or simplify error for user
-            await sendWhatsAppMessage(remoteJid, "System is briefly unavailable. Please try again.");
+            console.error("Agent Error Details:", e);
+            // Send the ACTUAL error message to the user/simulator to allow debugging
+            await sendWhatsAppMessage(remoteJid, `System Error: ${e.message || 'Unknown error'}. Check server logs for stack trace.`);
         }
     })();
   
