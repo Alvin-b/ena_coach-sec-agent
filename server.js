@@ -324,7 +324,13 @@ function scheduleTransactionCheck(checkoutRequestId, userJid) {
 let agentExecutor;
 
 async function initAgent() {
+    // Return existing executor if already initialized to prevent recreation
     if (agentExecutor) return agentExecutor;
+    
+    if (!API_KEY) {
+        console.error("[Agent] CRITICAL: No API Key found for Gemini. Check your .env file or Render Environment Variables.");
+        throw new Error("API Key missing");
+    }
     
     // Tools
     const searchRoutesTool = new DynamicStructuredTool({
@@ -423,7 +429,9 @@ async function initAgent() {
     ]);
       
     const agent = await createToolCallingAgent({ llm: llm.bindTools(tools), tools, prompt });
-    return new AgentExecutor({ agent, tools, verbose: true });
+    // Initialize the singleton
+    agentExecutor = new AgentExecutor({ agent, tools, verbose: true });
+    return agentExecutor;
 }
 
 // --- API Endpoints for Frontend Simulator ---
@@ -598,10 +606,18 @@ const handleWebhook = async (req, res) => {
     const text = data.message.conversation || data.message.extendedTextMessage?.text;
     if (!text) return res.status(200).send('OK');
     
-    // Use the JID provided in the key. If it's a LID (Linked Device ID), Evolution API handles it.
-    // However, if there is a 'remoteJidAlt' (often the phone number JID), we can optionally log or use it,
-    // but replying to the sender JID (data.key.remoteJid) is standard.
-    const remoteJid = data.key.remoteJid;
+    // Use the JID provided in the key. 
+    let remoteJid = data.key.remoteJid;
+
+    // FIX FOR LINKED DEVICES (LID):
+    // If the message comes from a linked device (@lid), Evolution API provides 'remoteJidAlt' which is the actual phone number.
+    // We MUST switch to the phone number JID (@s.whatsapp.net) for:
+    // 1. Consistent session tracking (chat history shouldn't reset if you switch devices)
+    // 2. Reliable message sending (replying to LID often fails)
+    if (remoteJid && remoteJid.includes('@lid') && data.key.remoteJidAlt) {
+        console.log(`[Webhook] Normalizing JID: ${remoteJid} -> ${data.key.remoteJidAlt}`);
+        remoteJid = data.key.remoteJidAlt;
+    }
   
     // Run AI in background
     (async () => {
@@ -623,7 +639,7 @@ const handleWebhook = async (req, res) => {
            
            await sendWhatsAppMessage(remoteJid, result.output);
         } catch(e) { 
-            console.error("Agent Error:", e); 
+            console.error("Agent Error Details:", e); 
             await sendWhatsAppMessage(remoteJid, "System is briefly unavailable. Please try again.");
         }
     })();
