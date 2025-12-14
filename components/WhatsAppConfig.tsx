@@ -279,7 +279,7 @@ const WhatsAppConfig: React.FC = () => {
                      {webhookLogs.map((log, idx) => (
                          <div key={idx} className="border-l-2 border-blue-500 pl-3">
                              <div className="flex justify-between text-gray-400 mb-1">
-                                 <span className="font-bold text-blue-300">HTTP {log.method}</span>
+                                 <span className="font-bold text-blue-300">HTTP {log.method} <span className="text-gray-500 text-[10px] ml-1">({log.path || '/webhook'})</span></span>
                                  <span>{new Date(log.timestamp).toLocaleTimeString()}</span>
                              </div>
                              <div className="mb-1">

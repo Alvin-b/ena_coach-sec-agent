@@ -542,30 +542,37 @@ app.post('/api/debug/clear', (req, res) => { debugOutbox.length = 0; res.sendSta
 app.get('/api/debug/webhook-logs', (req, res) => res.json(webhookLogs));
 app.post('/api/debug/clear-webhook', (req, res) => { webhookLogs.length = 0; res.sendStatus(200); });
 
-// --- Webhook Endpoint ---
-app.post('/webhook', async (req, res) => {
+// --- Unified Webhook Handler ---
+const handleWebhook = async (req, res) => {
     // 1. Log Incoming Request (DEBUGGING)
     try {
         const logEntry = {
             id: Date.now().toString(),
             timestamp: new Date().toISOString(),
             method: req.method,
+            path: req.originalUrl || req.url, // Log the exact path accessed
             type: req.body?.type || 'unknown',
             sender: req.body?.data?.key?.remoteJid || 'unknown',
             content: req.body?.data?.message || req.body,
-            raw: req.body // Store full body for inspection
+            raw: req.body
         };
         webhookLogs.unshift(logEntry);
-        if (webhookLogs.length > 50) webhookLogs.pop(); // Keep last 50
+        if (webhookLogs.length > 50) webhookLogs.pop(); 
     } catch (e) {
         console.error("Error logging webhook:", e);
     }
 
-    const { type, data } = req.body;
-    if (type !== 'messages.upsert' || !data.message) return res.status(200).send('OK');
+    const { type, data } = req.body || {};
+    
+    // Check if valid Evolution API upsert (robust check)
+    if (!type || type !== 'messages.upsert' || !data || !data.message) {
+        // Fallback or heartbeat check
+        return res.status(200).send('OK');
+    }
     
     const text = data.message.conversation || data.message.extendedTextMessage?.text;
     if (!text) return res.status(200).send('OK');
+    
     const remoteJid = data.key.remoteJid;
   
     // Run AI in background
@@ -594,7 +601,14 @@ app.post('/webhook', async (req, res) => {
     })();
   
     res.status(200).send('OK');
-});
+};
+
+// --- Register Webhook Routes ---
+// Listen on multiple paths to handle various Evolution API configurations
+app.post('/webhook', handleWebhook);
+app.post('/webhook/:instance', handleWebhook);
+app.post('/', handleWebhook);
+app.post('/api/webhook', handleWebhook);
 
 // --- M-Pesa Callback Endpoint ---
 app.post('/callback/mpesa', (req, res) => {
