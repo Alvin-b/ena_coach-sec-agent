@@ -1,7 +1,7 @@
 /**
  * Ena Coach AI Agent - Unified Server
  * Handles both the WhatsApp Webhook and serving the React Frontend.
- * Optimized for Render Deployment.
+ * Optimized for Render Deployment & Concurrency.
  */
 
 import 'dotenv/config'; 
@@ -320,118 +320,130 @@ function scheduleTransactionCheck(checkoutRequestId, userJid) {
     }, TIMEOUT_MS);
 }
 
-// --- Tools Setup ---
-let agentExecutor;
+// --- Tools Setup & Agent Singleton ---
+let agentExecutorPromise = null;
 
-async function initAgent() {
-    // Return existing executor if already initialized to prevent recreation
-    if (agentExecutor) return agentExecutor;
+async function getAgentExecutor() {
+    // Singleton Pattern: Ensure only one initialization Promise exists.
+    // Handles race conditions from multiple simultaneous webhook hits.
+    if (agentExecutorPromise) return agentExecutorPromise;
     
-    if (!API_KEY) {
-        console.error("[Agent] CRITICAL: No API Key found for Gemini. Check your .env file or Render Environment Variables.");
-        throw new Error("API Key missing");
-    }
-    
-    // Tools
-    const searchRoutesTool = new DynamicStructuredTool({
-        name: "searchRoutes",
-        description: "Search routes.",
-        schema: z.object({ origin: z.string(), destination: z.string() }),
-        func: async ({ origin, destination }) => {
-           let matches = routesStore.filter(r => r.origin.toLowerCase().includes(origin.toLowerCase()) && r.destination.toLowerCase().includes(destination.toLowerCase()));
-           if (matches.length === 0) return "No direct route found.";
-           return JSON.stringify(matches);
-        },
-    });
-      
-    const initiatePaymentTool = new DynamicStructuredTool({
-        name: "initiatePayment",
-        description: "Initiate M-Pesa. Args: phoneNumber, amount.",
-        schema: z.object({ 
-            phoneNumber: z.string(), 
-            amount: z.union([z.string(), z.number()]).transform(val => Number(val)) 
-        }),
-        func: async ({ phoneNumber, amount }) => {
-           const res = await triggerSTKPush(phoneNumber, amount);
-           if (res.success) {
-               const jid = phoneNumber.replace('+', '').replace(/^0/, '254') + "@s.whatsapp.net";
-               scheduleTransactionCheck(res.checkoutRequestId, jid);
-               return JSON.stringify({ status: 'initiated', message: "STK Push sent.", checkoutRequestId: res.checkoutRequestId });
-           }
-           return JSON.stringify(res);
-        },
-    });
-
-    const verifyPaymentTool = new DynamicStructuredTool({
-        name: "verifyPayment",
-        description: "Verify if payment is completed. Args: checkoutRequestId.",
-        schema: z.object({ checkoutRequestId: z.string() }),
-        func: async ({ checkoutRequestId }) => {
-            const res = await queryDarajaStatus(checkoutRequestId);
-            return JSON.stringify(res);
+    agentExecutorPromise = (async () => {
+        if (!API_KEY) {
+            console.error("[Agent] CRITICAL: No API Key found for Gemini.");
+            throw new Error("API Key missing");
         }
-    });
-      
-    const bookTicketTool = new DynamicStructuredTool({
-        name: "bookTicket",
-        description: "Book Ticket (Requires Date & Payment ID).",
-        schema: z.object({ 
-            passengerName: z.string(), 
-            routeId: z.string(), 
-            phoneNumber: z.string(), 
-            travelDate: z.string(),
-            checkoutRequestId: z.string()
-        }),
-        func: async ({ passengerName, routeId, phoneNumber, travelDate, checkoutRequestId }) => {
-            const statusCheck = await queryDarajaStatus(checkoutRequestId);
-            if (statusCheck.status !== 'COMPLETED') return JSON.stringify({ error: "Payment not found or incomplete." });
+        
+        // Tools definition
+        const searchRoutesTool = new DynamicStructuredTool({
+            name: "searchRoutes",
+            description: "Search routes.",
+            schema: z.object({ origin: z.string(), destination: z.string() }),
+            func: async ({ origin, destination }) => {
+            let matches = routesStore.filter(r => r.origin.toLowerCase().includes(origin.toLowerCase()) && r.destination.toLowerCase().includes(destination.toLowerCase()));
+            if (matches.length === 0) return "No direct route found.";
+            return JSON.stringify(matches);
+            },
+        });
+        
+        const initiatePaymentTool = new DynamicStructuredTool({
+            name: "initiatePayment",
+            description: "Initiate M-Pesa. Args: phoneNumber, amount.",
+            schema: z.object({ 
+                phoneNumber: z.string(), 
+                amount: z.union([z.string(), z.number()]).transform(val => Number(val)) 
+            }),
+            func: async ({ phoneNumber, amount }) => {
+            const res = await triggerSTKPush(phoneNumber, amount);
+            if (res.success) {
+                const jid = phoneNumber.replace('+', '').replace(/^0/, '254') + "@s.whatsapp.net";
+                scheduleTransactionCheck(res.checkoutRequestId, jid);
+                return JSON.stringify({ status: 'initiated', message: "STK Push sent.", checkoutRequestId: res.checkoutRequestId });
+            }
+            return JSON.stringify(res);
+            },
+        });
 
-            const booked = getBookedSeats(routeId, travelDate);
-            if (booked >= BUS_CAPACITY) return "Bus Fully Booked.";
-      
-            const route = routesStore.find(r => r.id === routeId);
-            const seatNumber = booked + 1;
-            const { ticketId, qrCodeUrl, bookingDate } = generateSecureTicket(passengerName, routeId, seatNumber, travelDate);
+        const verifyPaymentTool = new DynamicStructuredTool({
+            name: "verifyPayment",
+            description: "Verify if payment is completed. Args: checkoutRequestId.",
+            schema: z.object({ checkoutRequestId: z.string() }),
+            func: async ({ checkoutRequestId }) => {
+                const res = await queryDarajaStatus(checkoutRequestId);
+                return JSON.stringify(res);
+            }
+        });
+        
+        const bookTicketTool = new DynamicStructuredTool({
+            name: "bookTicket",
+            description: "Book Ticket (Requires Date & Payment ID).",
+            schema: z.object({ 
+                passengerName: z.string(), 
+                routeId: z.string(), 
+                phoneNumber: z.string(), 
+                travelDate: z.string(),
+                checkoutRequestId: z.string()
+            }),
+            func: async ({ passengerName, routeId, phoneNumber, travelDate, checkoutRequestId }) => {
+                const statusCheck = await queryDarajaStatus(checkoutRequestId);
+                if (statusCheck.status !== 'COMPLETED') return JSON.stringify({ error: "Payment not found or incomplete." });
 
-            const ticket = { id: ticketId, passengerName, routeId, date: travelDate, seat: seatNumber, qrUrl: qrCodeUrl, paymentId: checkoutRequestId, bookingDate };
-            ticketsStore.push(ticket);
+                const booked = getBookedSeats(routeId, travelDate);
+                if (booked >= BUS_CAPACITY) return "Bus Fully Booked.";
+        
+                const route = routesStore.find(r => r.id === routeId);
+                const seatNumber = booked + 1;
+                const { ticketId, qrCodeUrl, bookingDate } = generateSecureTicket(passengerName, routeId, seatNumber, travelDate);
 
-            return JSON.stringify({ status: 'success', message: 'Ticket Booked.', ticket });
-        },
-    });
+                const ticket = { id: ticketId, passengerName, routeId, date: travelDate, seat: seatNumber, qrUrl: qrCodeUrl, paymentId: checkoutRequestId, bookingDate };
+                ticketsStore.push(ticket);
 
-    const tools = [searchRoutesTool, initiatePaymentTool, verifyPaymentTool, bookTicketTool];
-    
-    // AI
-    const llm = new ChatGoogleGenerativeAI({
-        model: "gemini-2.5-flash",
-        apiKey: API_KEY, 
-        temperature: 0,
-        maxOutputTokens: 250,
-    });
-      
-    const prompt = ChatPromptTemplate.fromMessages([
-        ["system", `You are Ena Coach. TIME: {current_time}.
-        PROTOCOL:
-        1. Ask Origin & Destination.
-        2. Show Route & Price.
-        3. Ask Date.
-        4. **CRITICAL**: Confirm Details (Origin, Dest, Date, Price) with user. "You want to travel to X on [Date]. Correct?"
-        5. Ask Phone Number.
-        6. Call 'initiatePayment'.
-        7. Wait for user confirmation.
-        8. Call 'verifyPayment'.
-        9. Call 'bookTicket'.
-        `],
-        new MessagesPlaceholder("chat_history"),
-        ["human", "{input}"],
-        new MessagesPlaceholder("agent_scratchpad"),
-    ]);
-      
-    const agent = await createToolCallingAgent({ llm: llm.bindTools(tools), tools, prompt });
-    // Initialize the singleton
-    agentExecutor = new AgentExecutor({ agent, tools, verbose: true });
-    return agentExecutor;
+                return JSON.stringify({ status: 'success', message: 'Ticket Booked.', ticket });
+            },
+        });
+
+        const tools = [searchRoutesTool, initiatePaymentTool, verifyPaymentTool, bookTicketTool];
+        
+        // AI Model Configuration
+        const llm = new ChatGoogleGenerativeAI({
+            model: "gemini-2.5-flash",
+            apiKey: API_KEY, 
+            temperature: 0.3, // Slightly higher temperature for better conversational flow
+            maxOutputTokens: 300,
+            maxRetries: 2, // Important for concurrency/stability
+            safetySettings: [ // Permissive safety settings to prevent false positives blocking functionality
+                { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+            ]
+        });
+        
+        const prompt = ChatPromptTemplate.fromMessages([
+            ["system", `You are Ena Coach. TIME: {current_time}.
+            PROTOCOL:
+            1. Ask Origin & Destination.
+            2. Show Route & Price.
+            3. Ask Date.
+            4. **CRITICAL**: Confirm Details (Origin, Dest, Date, Price) with user. "You want to travel to X on [Date]. Correct?"
+            5. Ask Phone Number.
+            6. Call 'initiatePayment'.
+            7. Wait for user confirmation.
+            8. Call 'verifyPayment'.
+            9. Call 'bookTicket'.
+            `],
+            new MessagesPlaceholder("chat_history"),
+            ["human", "{input}"],
+            new MessagesPlaceholder("agent_scratchpad"),
+        ]);
+        
+        const agent = await createToolCallingAgent({ llm: llm.bindTools(tools), tools, prompt });
+        
+        // Disable verbose logging for production speed
+        return new AgentExecutor({ agent, tools, verbose: false });
+    })();
+
+    return agentExecutorPromise;
 }
 
 // --- API Endpoints for Frontend Simulator ---
@@ -622,8 +634,10 @@ const handleWebhook = async (req, res) => {
     // Run AI in background
     (async () => {
         try {
-           const executor = await initAgent();
+           const executor = await getAgentExecutor();
            const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
+           
+           // History Management: Limit context window for speed and efficiency
            let history = userSessions.get(remoteJid) || [];
   
            const result = await executor.invoke({ 
@@ -632,18 +646,22 @@ const handleWebhook = async (req, res) => {
                chat_history: history
            });
            
+           // Update history with new turn
            history.push(new HumanMessage(text));
            history.push(new AIMessage(result.output));
-           if (history.length > 8) history = history.slice(-8);
+           // Limit to last 6 messages (3 turns) for speed and to reduce token usage
+           if (history.length > 6) history = history.slice(-6);
            userSessions.set(remoteJid, history);
            
            await sendWhatsAppMessage(remoteJid, result.output);
         } catch(e) { 
             console.error("Agent Error Details:", e); 
+            // Only send error message if it's not a transient networking glitch, or simplify error for user
             await sendWhatsAppMessage(remoteJid, "System is briefly unavailable. Please try again.");
         }
     })();
   
+    // Immediate response to Webhook to prevent timeouts at the source
     res.status(200).send('OK');
 };
 
