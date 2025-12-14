@@ -286,12 +286,24 @@ async function sendWhatsAppMessage(remoteJid, text) {
     debugOutbox.push({ to: remoteJid, text, timestamp: Date.now() });
     if (debugOutbox.length > 50) debugOutbox.shift();
 
-    if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) return;
+    if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) {
+        console.error("Missing Evolution API Configuration. Cannot send message.");
+        return;
+    }
+
     try {
-        await fetch(`${EVOLUTION_API_URL}/message/sendText/${INSTANCE_NAME}`, {
+        console.log(`[WhatsApp] Sending to ${remoteJid}...`);
+        const response = await fetch(`${EVOLUTION_API_URL}/message/sendText/${INSTANCE_NAME}`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': EVOLUTION_API_TOKEN },
             body: JSON.stringify({ number: remoteJid, text: text })
         });
+        
+        if (!response.ok) {
+            const errText = await response.text();
+            console.error(`[WhatsApp API Error] Status: ${response.status} | Body: ${errText}`);
+        } else {
+            console.log("[WhatsApp] Message Sent Successfully.");
+        }
     } catch(e) { console.error("API Send Error:", e); }
 }
 
@@ -640,7 +652,7 @@ const handleWebhook = async (req, res) => {
             // OPTIMIZATION: Don't store the massive 'req.body' in memory logs.
             // Just store the essential extracted parts to save server memory.
             raw: { 
-               key: { remoteJid: remoteJid, id: data.key.id },
+               key: { remoteJid: remoteJid, id: data.key.id, remoteJidAlt: data.key.remoteJidAlt, participant: data.key.participant },
                message: { text: text ? (text.length > 100 ? text.substring(0, 100) + '...' : text) : null }
             }
         };
@@ -666,9 +678,17 @@ const handleWebhook = async (req, res) => {
     let finalJid = remoteJid;
 
     // FIX FOR LINKED DEVICES (LID):
-    if (finalJid && finalJid.includes('@lid') && data.key.remoteJidAlt) {
-        console.log(`[Webhook] Normalizing JID: ${finalJid} -> ${data.key.remoteJidAlt}`);
-        finalJid = data.key.remoteJidAlt;
+    if (finalJid && finalJid.includes('@lid')) {
+        console.log(`[Webhook] LID Detected: ${finalJid}`);
+        if (data.key.remoteJidAlt) {
+             console.log(`[Webhook] Normalizing JID via Alt: ${finalJid} -> ${data.key.remoteJidAlt}`);
+             finalJid = data.key.remoteJidAlt;
+        } else if (data.key.participant && !data.key.participant.includes('@lid')) {
+             console.log(`[Webhook] Normalizing JID via Participant: ${finalJid} -> ${data.key.participant}`);
+             finalJid = data.key.participant;
+        } else {
+             console.warn("[Webhook] Warning: Could not resolve phone number from LID JID. Replies may fail.");
+        }
     }
   
     // Run AI in background
