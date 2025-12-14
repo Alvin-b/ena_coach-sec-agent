@@ -1,4 +1,4 @@
-import { GoogleGenAI, FunctionDeclaration, Type, Chat, GenerateContentResponse, Part } from '@google/genai';
+import { GoogleGenAI, FunctionDeclaration, Type, Chat, GenerateContentResponse, Part, HarmCategory, HarmBlockThreshold } from '@google/genai';
 import { Ticket } from '../types';
 
 // --- CUSTOMER TOOLS ---
@@ -166,10 +166,10 @@ export class GeminiService {
     
     // Safety Settings to prevent false blocks
     const safetySettings = [
-      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+      { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+      { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+      { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+      { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
     ];
 
     // 1. Customer Chat Instance
@@ -266,7 +266,20 @@ export class GeminiService {
           console.log(`[Gemini Customer] Calling tool: ${name}`, args);
 
           if (name === 'searchRoutes') {
-            functionResponse = functions.searchRoutes(args.origin, args.destination);
+            const results = functions.searchRoutes(args.origin, args.destination);
+            // OPTIMIZATION: Minify payload for AI
+            if (Array.isArray(results)) {
+                functionResponse = results.map((r: any) => ({
+                    id: r.id,
+                    org: r.origin,
+                    dst: r.destination,
+                    time: r.departureTime,
+                    price: r.price,
+                    type: r.busType
+                }));
+            } else {
+                functionResponse = results;
+            }
           } else if (name === 'initiatePayment') {
              const res = await functions.initiatePayment(args.phoneNumber, args.amount);
              functionResponse = res; 
@@ -279,7 +292,13 @@ export class GeminiService {
                 const ticket = functions.bookTicket(args.passengerName, args.routeId, args.phoneNumber, args.checkoutRequestId);
                 if (ticket) {
                     bookedTicket = ticket;
-                    functionResponse = { ...ticket, status: 'success', message: "Secure Ticket Generated." };
+                    // OPTIMIZATION: Send minimal confirmation to AI, not the full QR code/ticket object
+                    functionResponse = { 
+                        status: 'success', 
+                        message: "Ticket Generated.", 
+                        ticketId: ticket.id,
+                        seat: ticket.seatNumber
+                    };
                 } else {
                     functionResponse = { error: "Booking failed (Server Error)." };
                 }
@@ -367,11 +386,31 @@ export class GeminiService {
                          functionResponse = { status: "pending_confirmation", message: "Please ask user to confirm." };
                      }
                 } else if (name === 'searchRoutes') {
-                    functionResponse = functions.searchRoutes(args.origin, args.destination);
+                    const results = functions.searchRoutes(args.origin, args.destination);
+                    if (Array.isArray(results)) {
+                        functionResponse = results.map((r: any) => ({
+                            id: r.id,
+                            org: r.origin,
+                            dst: r.destination,
+                            time: r.departureTime,
+                            price: r.price
+                        }));
+                    } else {
+                        functionResponse = results;
+                    }
                 } else if (name === 'trackBus') {
                     functionResponse = await functions.getBusStatus(args.query);
                 } else if (name === 'getRouteManifest') {
-                    functionResponse = await functions.getRouteManifest(args.routeId, args.date);
+                    const manifest = await functions.getRouteManifest(args.routeId, args.date);
+                    // OPTIMIZATION: Reduce manifest details
+                    if (manifest && Array.isArray(manifest.passengers)) {
+                        functionResponse = {
+                            total: manifest.total,
+                            passengers: manifest.passengers.map((p: any) => ({ name: p.name, seat: p.seat }))
+                        };
+                    } else {
+                        functionResponse = manifest;
+                    }
                 } else if (name === 'getComplaints') {
                     functionResponse = functions.getComplaints(args.status);
                 } else if (name === 'resolveComplaint') {

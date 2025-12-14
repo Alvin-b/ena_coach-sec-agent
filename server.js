@@ -342,9 +342,20 @@ async function getAgentExecutor() {
             description: "Search routes.",
             schema: z.object({ origin: z.string(), destination: z.string() }),
             func: async ({ origin, destination }) => {
-            let matches = routesStore.filter(r => r.origin.toLowerCase().includes(origin.toLowerCase()) && r.destination.toLowerCase().includes(destination.toLowerCase()));
-            if (matches.length === 0) return "No direct route found.";
-            return JSON.stringify(matches);
+                let matches = routesStore.filter(r => r.origin.toLowerCase().includes(origin.toLowerCase()) && r.destination.toLowerCase().includes(destination.toLowerCase()));
+                if (matches.length === 0) return "No direct route found.";
+                
+                // TOKEN OPTIMIZATION: Return only essential fields to AI.
+                // Exclude 'stops', 'availableSeats' (implied by existence), and internal metadata.
+                const simplified = matches.map(r => ({
+                    id: r.id,
+                    org: r.origin,
+                    dst: r.destination,
+                    time: r.departureTime,
+                    price: r.price,
+                    type: r.busType
+                }));
+                return JSON.stringify(simplified);
             },
         });
         
@@ -400,7 +411,15 @@ async function getAgentExecutor() {
                 const ticket = { id: ticketId, passengerName, routeId, date: travelDate, seat: seatNumber, qrUrl: qrCodeUrl, paymentId: checkoutRequestId, bookingDate };
                 ticketsStore.push(ticket);
 
-                return JSON.stringify({ status: 'success', message: 'Ticket Booked.', ticket });
+                // TOKEN OPTIMIZATION: Return only confirmation and ID. 
+                // Do NOT send the massive QR Code URL or signature to the LLM context.
+                return JSON.stringify({ 
+                    status: 'success', 
+                    message: 'Ticket Booked Successfully.', 
+                    ticketId: ticketId,
+                    seat: seatNumber,
+                    route: `${route.origin} to ${route.destination}`
+                });
             },
         });
 
@@ -594,6 +613,15 @@ const handleWebhook = async (req, res) => {
     const eventType = req.body?.type || req.body?.event; // Support both
     const { data } = req.body || {};
 
+    // Validate payload existence first to avoid errors accessing 'data' properties
+    if (!data || !data.key || !data.message) {
+        return res.status(200).send('OK');
+    }
+
+    // Extract basic info first
+    const remoteJid = data.key.remoteJid;
+    const text = data.message.conversation || data.message.extendedTextMessage?.text;
+
     try {
         const logEntry = {
             id: Date.now().toString(),
@@ -601,9 +629,14 @@ const handleWebhook = async (req, res) => {
             method: req.method,
             path: req.originalUrl || req.url,
             type: eventType || 'unknown',
-            sender: data?.key?.remoteJid || req.body?.sender || 'unknown',
-            content: data?.message || req.body,
-            raw: req.body
+            sender: remoteJid,
+            content: text ? (text.length > 50 ? text.substring(0, 50) + '...' : text) : 'No Text',
+            // OPTIMIZATION: Don't store the massive 'req.body' in memory logs.
+            // Just store the essential extracted parts to save server memory.
+            raw: { 
+               key: { remoteJid: remoteJid, id: data.key.id },
+               message: { text: text ? (text.length > 100 ? text.substring(0, 100) + '...' : text) : null }
+            }
         };
         webhookLogs.unshift(logEntry);
         if (webhookLogs.length > 50) webhookLogs.pop(); 
@@ -612,8 +645,7 @@ const handleWebhook = async (req, res) => {
     }
 
     // Check if valid Evolution API upsert (robust check)
-    // Evolution API sends 'type' or 'event' property depending on version/config
-    if (!eventType || eventType !== 'messages.upsert' || !data || !data.message) {
+    if (!eventType || eventType !== 'messages.upsert') {
         return res.status(200).send('OK');
     }
     
@@ -622,20 +654,15 @@ const handleWebhook = async (req, res) => {
         return res.status(200).send('OK');
     }
 
-    const text = data.message.conversation || data.message.extendedTextMessage?.text;
     if (!text) return res.status(200).send('OK');
     
     // Use the JID provided in the key. 
-    let remoteJid = data.key.remoteJid;
+    let finalJid = remoteJid;
 
     // FIX FOR LINKED DEVICES (LID):
-    // If the message comes from a linked device (@lid), Evolution API provides 'remoteJidAlt' which is the actual phone number.
-    // We MUST switch to the phone number JID (@s.whatsapp.net) for:
-    // 1. Consistent session tracking (chat history shouldn't reset if you switch devices)
-    // 2. Reliable message sending (replying to LID often fails)
-    if (remoteJid && remoteJid.includes('@lid') && data.key.remoteJidAlt) {
-        console.log(`[Webhook] Normalizing JID: ${remoteJid} -> ${data.key.remoteJidAlt}`);
-        remoteJid = data.key.remoteJidAlt;
+    if (finalJid && finalJid.includes('@lid') && data.key.remoteJidAlt) {
+        console.log(`[Webhook] Normalizing JID: ${finalJid} -> ${data.key.remoteJidAlt}`);
+        finalJid = data.key.remoteJidAlt;
     }
   
     // Run AI in background
@@ -645,26 +672,30 @@ const handleWebhook = async (req, res) => {
            const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
            
            // History Management: Limit context window for speed and efficiency
-           let history = userSessions.get(remoteJid) || [];
+           let history = userSessions.get(finalJid) || [];
   
+           // TOKEN SAFEGUARD: Truncate input if user sends a novel.
+           // Limits input to 500 characters to prevent excessive token usage from single large messages.
+           const truncatedInput = text.length > 500 ? text.substring(0, 500) + "...(truncated)" : text;
+
            const result = await executor.invoke({ 
-               input: text, 
+               input: truncatedInput, 
                current_time: now, 
                chat_history: history
            });
            
            // Update history with new turn
-           history.push(new HumanMessage(text));
+           history.push(new HumanMessage(truncatedInput));
            history.push(new AIMessage(result.output));
            // Limit to last 6 messages (3 turns) for speed and to reduce token usage
            if (history.length > 6) history = history.slice(-6);
-           userSessions.set(remoteJid, history);
+           userSessions.set(finalJid, history);
            
-           await sendWhatsAppMessage(remoteJid, result.output);
+           await sendWhatsAppMessage(finalJid, result.output);
         } catch(e) { 
             console.error("Agent Error Details:", e);
             // Send the ACTUAL error message to the user/simulator to allow debugging
-            await sendWhatsAppMessage(remoteJid, `System Error: ${e.message || 'Unknown error'}. Check server logs for stack trace.`);
+            await sendWhatsAppMessage(finalJid, `System Error: ${e.message || 'Unknown error'}. Check server logs for stack trace.`);
         }
     })();
   
