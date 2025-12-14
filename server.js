@@ -353,7 +353,7 @@ async function getAgentExecutor() {
             description: "Initiate M-Pesa. Args: phoneNumber, amount.",
             schema: z.object({ 
                 phoneNumber: z.string(), 
-                amount: z.union([z.string(), z.number()]).transform(val => Number(val)) 
+                amount: z.number().describe("The amount to pay in KES")
             }),
             func: async ({ phoneNumber, amount }) => {
             const res = await triggerSTKPush(phoneNumber, amount);
