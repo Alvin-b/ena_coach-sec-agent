@@ -11,7 +11,7 @@ const CustomerChat: React.FC = () => {
     {
       id: 'welcome',
       role: 'model',
-      text: 'Hello! I am the Ena Coach AI Agent (Test Mode). I can help simulate customer interactions for finding buses, tracking locations, booking seats, and handling complaints. How can I assist you?',
+      text: 'Hello! I am the Ena Coach AI Agent. I can help you find buses, track locations, book seats, and handle complaints. How can I assist you?',
       timestamp: new Date()
     }
   ]);
@@ -129,7 +129,7 @@ const CustomerChat: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col h-full bg-gray-100 relative">
+    <div className="flex flex-col h-full bg-gray-100 relative overflow-hidden">
       {/* Auth Modal Overlay */}
       {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
       
@@ -283,7 +283,7 @@ const CustomerChat: React.FC = () => {
           <input
             type="text"
             className="w-full bg-transparent outline-none text-gray-700 placeholder-gray-400"
-            placeholder="Type a simulated message..."
+            placeholder="Type a message..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}

@@ -186,7 +186,9 @@ export class GeminiService {
         3. DO NOT ask for a Phone Number or proceed to payment until the user answers "Yes" to the confirmation question.
         4. If the user confirms, ask for the M-Pesa Phone Number.
         5. Call 'initiatePayment(phone, amount)'. 
-        6. OUTPUT: "I have sent a payment request to [Phone]. Please enter your PIN to confirm."
+        6. **CHECK OUTPUT of initiatePayment**:
+           - IF success: Say "I have sent a payment request to [Phone]. Please enter your PIN to confirm."
+           - IF error: Say "I could not send the payment request. Reason: [Error Message]."
         7. **STOP** and wait for the user to reply (e.g., "Done", "I paid").
         8. When user confirms payment, Call 'verifyPayment(checkoutRequestId)'.
            - Note: You must remember the 'checkoutRequestId' from step 5.
@@ -246,7 +248,9 @@ export class GeminiService {
       bookTicket: any,
       logComplaint: any,
       getBusStatus: any
-    }
+    },
+    // New Callback for UI Notifications
+    onPaymentInitiated?: (phone: string, amount: number) => void
   ): Promise<{ text: string, ticket?: Ticket }> {
     try {
       const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
@@ -265,8 +269,9 @@ export class GeminiService {
           let functionResponse;
           console.log(`[Gemini Customer] Calling tool: ${name}`, args);
 
+          // Arguments must be cast from unknown/any to their expected types
           if (name === 'searchRoutes') {
-            const results = functions.searchRoutes(args.origin, args.destination);
+            const results = functions.searchRoutes(args.origin as string, args.destination as string);
             // OPTIMIZATION: Minify payload for AI
             if (Array.isArray(results)) {
                 functionResponse = results.map((r: any) => ({
@@ -281,15 +286,23 @@ export class GeminiService {
                 functionResponse = results;
             }
           } else if (name === 'initiatePayment') {
-             const res = await functions.initiatePayment(args.phoneNumber, args.amount);
+             const res = await functions.initiatePayment(args.phoneNumber as string, args.amount as number);
+             if (res.success && onPaymentInitiated) {
+                 onPaymentInitiated(args.phoneNumber as string, args.amount as number);
+             }
              functionResponse = res; 
           } else if (name === 'verifyPayment') {
-             const res = await functions.verifyPayment(args.checkoutRequestId);
+             const res = await functions.verifyPayment(args.checkoutRequestId as string);
              functionResponse = res;
           } else if (name === 'bookTicket') {
-            const paymentCheck = await functions.verifyPayment(args.checkoutRequestId);
+            const paymentCheck = await functions.verifyPayment(args.checkoutRequestId as string);
             if (paymentCheck.status === 'COMPLETED') {
-                const ticket = functions.bookTicket(args.passengerName, args.routeId, args.phoneNumber, args.checkoutRequestId);
+                const ticket = functions.bookTicket(
+                    args.passengerName as string, 
+                    args.routeId as string, 
+                    args.phoneNumber as string, 
+                    args.checkoutRequestId as string
+                );
                 if (ticket) {
                     bookedTicket = ticket;
                     // OPTIMIZATION: Send minimal confirmation to AI, not the full QR code/ticket object
@@ -306,10 +319,16 @@ export class GeminiService {
                  functionResponse = { error: `Payment Verification Failed. Status: ${paymentCheck.status}. Ticket denied.` };
             }
           } else if (name === 'logComplaint') {
-            const complaintId = functions.logComplaint(args.customerName, args.issue, args.severity, args.incidentDate, args.routeInfo);
+            const complaintId = functions.logComplaint(
+                args.customerName as string, 
+                args.issue as string, 
+                args.severity as 'low' | 'medium' | 'high', 
+                args.incidentDate as string, 
+                args.routeInfo as string
+            );
             functionResponse = { complaintId, status: 'logged' };
           } else if (name === 'trackBus') {
-            const status = await functions.getBusStatus(args.query);
+            const status = await functions.getBusStatus(args.query as string);
             functionResponse = status || { error: "Bus not found." };
           } else {
               functionResponse = { error: "Unknown function" };
@@ -374,19 +393,19 @@ export class GeminiService {
                 console.log(`[Gemini Admin] Calling tool: ${name}`, args);
 
                 if (name === 'getFinancialReport') {
-                    functionResponse = functions.getFinancialReport(args.startDate, args.endDate);
+                    functionResponse = functions.getFinancialReport(args.startDate as string, args.endDate as string);
                 } else if (name === 'getOccupancyStats') {
                     functionResponse = functions.getOccupancyStats();
                 } else if (name === 'broadcastMessage') {
                      if (args.confirm) {
                          const phones = functions.contacts.map((c: any) => c.phoneNumber);
-                         const res = await functions.broadcastMessage(args.message, phones);
+                         const res = await functions.broadcastMessage(args.message as string, phones);
                          functionResponse = res;
                      } else {
                          functionResponse = { status: "pending_confirmation", message: "Please ask user to confirm." };
                      }
                 } else if (name === 'searchRoutes') {
-                    const results = functions.searchRoutes(args.origin, args.destination);
+                    const results = functions.searchRoutes(args.origin as string, args.destination as string);
                     if (Array.isArray(results)) {
                         functionResponse = results.map((r: any) => ({
                             id: r.id,
@@ -399,9 +418,9 @@ export class GeminiService {
                         functionResponse = results;
                     }
                 } else if (name === 'trackBus') {
-                    functionResponse = await functions.getBusStatus(args.query);
+                    functionResponse = await functions.getBusStatus(args.query as string);
                 } else if (name === 'getRouteManifest') {
-                    const manifest = await functions.getRouteManifest(args.routeId, args.date);
+                    const manifest = await functions.getRouteManifest(args.routeId as string, args.date as string);
                     // OPTIMIZATION: Reduce manifest details
                     if (manifest && Array.isArray(manifest.passengers)) {
                         functionResponse = {
@@ -412,9 +431,9 @@ export class GeminiService {
                         functionResponse = manifest;
                     }
                 } else if (name === 'getComplaints') {
-                    functionResponse = functions.getComplaints(args.status);
+                    functionResponse = functions.getComplaints(args.status as 'open' | 'resolved' | undefined);
                 } else if (name === 'resolveComplaint') {
-                    functionResponse = await functions.resolveComplaint(args.complaintId, args.resolutionMessage);
+                    functionResponse = await functions.resolveComplaint(args.complaintId as string, args.resolutionMessage as string);
                 }
 
                 parts.push({

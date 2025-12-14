@@ -182,6 +182,7 @@ async function getDarajaToken() {
   const auth = Buffer.from(`${DARAJA_CONSUMER_KEY}:${DARAJA_CONSUMER_SECRET}`).toString('base64');
   try {
     const response = await fetch(url, { headers: { 'Authorization': `Basic ${auth}` } });
+    if (!response.ok) return null;
     const data = await response.json();
     return data.access_token;
   } catch (error) { 
@@ -199,7 +200,8 @@ async function triggerSTKPush(phoneNumber, amount) {
   try {
       const token = await getDarajaToken();
       if (!token) {
-        return { success: false, message: "Payment service error: Auth Failed." };
+        console.error("[STK-PUSH] Failed to generate token. Credentials missing or invalid.");
+        return { success: false, message: "Payment Error: Unable to authenticate with M-Pesa. Please check system configuration." };
       }
       
       const timestamp = getDarajaTimestamp();
@@ -249,6 +251,7 @@ async function triggerSTKPush(phoneNumber, amount) {
 
 async function queryDarajaStatus(checkoutRequestId) {
     const local = paymentStore.get(checkoutRequestId);
+    
     if (local && local.status === 'COMPLETED') return { status: 'COMPLETED', message: 'Payment Received' };
 
     const token = await getDarajaToken();
@@ -371,7 +374,7 @@ async function getAgentExecutor() {
             if (res.success) {
                 const jid = phoneNumber.replace('+', '').replace(/^0/, '254') + "@s.whatsapp.net";
                 scheduleTransactionCheck(res.checkoutRequestId, jid);
-                return JSON.stringify({ status: 'initiated', message: "STK Push sent.", checkoutRequestId: res.checkoutRequestId });
+                return JSON.stringify({ status: 'initiated', message: res.message, checkoutRequestId: res.checkoutRequestId });
             }
             return JSON.stringify(res);
             },
@@ -449,9 +452,12 @@ async function getAgentExecutor() {
             4. **CRITICAL**: Confirm Details (Origin, Dest, Date, Price) with user. "You want to travel to X on [Date]. Correct?"
             5. Ask Phone Number.
             6. Call 'initiatePayment'.
-            7. Wait for user confirmation.
-            8. Call 'verifyPayment'.
-            9. Call 'bookTicket'.
+            7. **CHECK OUTPUT of initiatePayment**:
+               - IF success: Say "I have sent a payment request to [Phone]. Please enter your PIN."
+               - IF error: Say "I could not send the payment request. Reason: [Error Message]."
+            8. Wait for user confirmation.
+            9. Call 'verifyPayment'.
+            10. Call 'bookTicket'.
             `],
             new MessagesPlaceholder("chat_history"),
             ["human", "{input}"],
