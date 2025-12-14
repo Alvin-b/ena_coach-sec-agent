@@ -24,12 +24,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 10000;
 
-// API Keys
-const API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
-const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL ? process.env.EVOLUTION_API_URL.replace(/\/$/, '') : '';
-const EVOLUTION_API_TOKEN = process.env.EVOLUTION_API_TOKEN;
-// Fallback Instance Name if not provided in webhook
-const DEFAULT_INSTANCE_NAME = process.env.INSTANCE_NAME;
+// API Keys & Runtime Config
+// We use a mutable config object so the Dashboard can update credentials without a restart
+const runtimeConfig = {
+    apiKey: process.env.GEMINI_API_KEY || process.env.API_KEY || '',
+    evolutionUrl: process.env.EVOLUTION_API_URL ? process.env.EVOLUTION_API_URL.replace(/\/$/, '') : '',
+    evolutionToken: process.env.EVOLUTION_API_TOKEN || '',
+    instanceName: process.env.INSTANCE_NAME || 'EnaCoach'
+};
 
 // Server URL Detection (Critical for Callbacks)
 const SERVER_URL = process.env.SERVER_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
@@ -219,32 +221,50 @@ async function queryDarajaStatus(checkoutRequestId) {
     } catch (e) { return { status: 'UNKNOWN', message: 'Network Error' }; }
 }
 
-// Updated to accept instanceName dynamically
+// Updated to use runtime config and better logging
 async function sendWhatsAppMessage(remoteJid, text, instanceOverride = null) {
-    const activeInstance = instanceOverride || DEFAULT_INSTANCE_NAME;
+    const activeInstance = instanceOverride || runtimeConfig.instanceName;
+    const apiUrl = runtimeConfig.evolutionUrl;
+    const apiToken = runtimeConfig.evolutionToken;
 
-    // Log to dashboard
-    debugOutbox.push({ to: remoteJid, text, timestamp: Date.now(), instance: activeInstance });
+    // Sanitize JID: remove @s.whatsapp.net to get plain number, as Evolution API often expects strict numbers
+    const cleanNumber = remoteJid ? remoteJid.replace(/@s\.whatsapp\.net|@lid/g, '') : '';
+
+    // Create log entry reference
+    const logEntry = { to: cleanNumber, text, timestamp: Date.now(), instance: activeInstance, status: 'pending' };
+    debugOutbox.push(logEntry);
     if (debugOutbox.length > 50) debugOutbox.shift();
 
-    if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) {
-        console.error("Missing Evolution API URL/Token in Env Vars");
+    if (!apiUrl || !apiToken) {
+        console.error("Missing Evolution API URL/Token.");
+        logEntry.status = 'failed: missing config';
         return;
     }
     if (!activeInstance) {
-        console.error("Missing Instance Name. Cannot send.");
+        console.error("Missing Instance Name.");
+        logEntry.status = 'failed: missing instance';
         return;
     }
 
     try {
-        const response = await fetch(`${EVOLUTION_API_URL}/message/sendText/${activeInstance}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': EVOLUTION_API_TOKEN },
-            body: JSON.stringify({ number: remoteJid, text: text })
+        const response = await fetch(`${apiUrl}/message/sendText/${activeInstance}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': apiToken },
+            body: JSON.stringify({ number: cleanNumber, text: text })
         });
+        
         if (!response.ok) {
-            console.error(`Evolution API Error: ${await response.text()}`);
+            const errText = await response.text();
+            console.error(`Evolution API Error: ${errText}`);
+            logEntry.status = `failed: ${response.status}`;
+            logEntry.error = errText;
+        } else {
+            logEntry.status = 'sent';
         }
-    } catch(e) { console.error("API Send Error:", e); }
+    } catch(e) { 
+        console.error("API Send Error:", e);
+        logEntry.status = 'error: network';
+        logEntry.error = e.message;
+    }
 }
 
 // --- Tools Setup & Agent Singleton ---
@@ -254,7 +274,7 @@ async function getAgentExecutor() {
     if (agentExecutorPromise) return agentExecutorPromise;
     
     agentExecutorPromise = (async () => {
-        if (!API_KEY) throw new Error("API Key missing");
+        if (!runtimeConfig.apiKey) throw new Error("API Key missing");
         
         const searchRoutesTool = new DynamicStructuredTool({
             name: "searchRoutes",
@@ -307,7 +327,7 @@ async function getAgentExecutor() {
 
         const tools = [searchRoutesTool, initiatePaymentTool, verifyPaymentTool, bookTicketTool];
         const llm = new ChatGoogleGenerativeAI({
-            model: "gemini-2.5-flash", apiKey: API_KEY, temperature: 0.3, maxOutputTokens: 300,
+            model: "gemini-2.5-flash", apiKey: runtimeConfig.apiKey, temperature: 0.3, maxOutputTokens: 300,
         });
         const prompt = ChatPromptTemplate.fromMessages([
             ["system", `You are Ena Coach. TIME: {current_time}. Confirm details before payment. Use tools.`],
@@ -323,7 +343,24 @@ async function getAgentExecutor() {
 
 // --- API Endpoints ---
 
-app.get('/api/config', (req, res) => res.json({ apiKey: API_KEY || '' }));
+// Runtime Configuration Endpoint
+app.post('/api/config/update', (req, res) => {
+    const { apiUrl, apiToken, instanceName } = req.body;
+    if (apiUrl) runtimeConfig.evolutionUrl = apiUrl.replace(/\/$/, '');
+    if (apiToken) runtimeConfig.evolutionToken = apiToken;
+    if (instanceName) runtimeConfig.instanceName = instanceName;
+    console.log("[Config] Runtime config updated via Dashboard:", runtimeConfig.instanceName);
+    
+    // Reset agent executor if API Key changes (not implemented in UI but supported here)
+    if (req.body.apiKey) {
+        runtimeConfig.apiKey = req.body.apiKey;
+        agentExecutorPromise = null;
+    }
+    
+    res.json({ success: true, config: { ...runtimeConfig, evolutionToken: '***' } });
+});
+
+app.get('/api/config', (req, res) => res.json({ apiKey: runtimeConfig.apiKey || '' }));
 app.post('/api/payment/initiate', async (req, res) => res.json(await triggerSTKPush(req.body.phoneNumber, Number(req.body.amount))));
 app.get('/api/payment/status/:id', async (req, res) => res.json(await queryDarajaStatus(req.params.id)));
 app.get('/api/routes', (req, res) => res.json(routesStore));
@@ -361,9 +398,7 @@ app.get('/api/manifest', (req, res) => {
 });
 
 app.get('/api/contacts', (req, res) => {
-    // Mock contacts if empty
     if(ticketsStore.length === 0) return res.json([{phoneNumber: '254712345678', name: 'John Doe', lastTravelDate: '2023-11-01', totalTrips: 3}]);
-    // Simplistic extraction from tickets
     res.json(ticketsStore.map(t => ({phoneNumber: 'Unknown', name: t.passengerName, lastTravelDate: t.date, totalTrips: 1})));
 });
 
@@ -387,14 +422,13 @@ app.post('/api/debug/clear-webhook', (req, res) => { webhookLogs.length = 0; res
 // --- Unified Webhook Handler ---
 const handleWebhook = async (req, res) => {
     const eventType = req.body?.type || req.body?.event;
-    const { data, instance } = req.body || {}; // Capture instance from payload
+    const { data, instance } = req.body || {}; 
 
     if (!data || !data.key || !data.message) return res.status(200).send('OK');
 
     const remoteJid = data.key.remoteJid;
     const text = data.message.conversation || data.message.extendedTextMessage?.text;
 
-    // Log Request
     webhookLogs.unshift({
         id: Date.now().toString(), timestamp: new Date().toISOString(), type: eventType, sender: remoteJid, content: text,
         raw: { key: data.key, instance }
@@ -425,7 +459,6 @@ const handleWebhook = async (req, res) => {
            if (history.length > 6) history = history.slice(-6);
            userSessions.set(finalJid, history);
            
-           // Pass the instance name from the webhook to the sender function
            await sendWhatsAppMessage(finalJid, result.output, instance);
         } catch(e) { 
             console.error("Agent Error:", e);

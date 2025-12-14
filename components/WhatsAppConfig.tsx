@@ -72,9 +72,24 @@ const WhatsAppConfig: React.FC = () => {
       setWebhookLogs([]);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     saveWhatsAppConfig({ apiUrl, apiToken: apiKey, instanceName });
-    addLog('Configuration saved.');
+    
+    // Push to server runtime config
+    try {
+        const res = await fetch('/api/config/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiUrl, apiToken: apiKey, instanceName })
+        });
+        if (res.ok) {
+            addLog('Configuration saved and pushed to server runtime!');
+        } else {
+            addLog('Configuration saved locally, but server update failed.');
+        }
+    } catch (e) {
+        addLog(`Error pushing config to server: ${e}`);
+    }
   };
 
   const handleSimulateWebhook = async () => {
@@ -352,12 +367,18 @@ const WhatsAppConfig: React.FC = () => {
                          <div className="text-gray-600 text-xs italic text-center mt-10">No messages yet. Try sending one!</div>
                      ) : (
                          debugMessages.map((msg: any, idx) => (
-                             <div key={idx} className="bg-gray-800 p-2 rounded border-l-2 border-green-500">
+                             <div key={idx} className={`bg-gray-800 p-2 rounded border-l-2 ${msg.status?.includes('failed') ? 'border-red-500' : 'border-green-500'}`}>
                                  <div className="flex justify-between text-[10px] text-gray-400 mb-1">
                                      <span>To: {msg.to}</span>
                                      <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
                                  </div>
                                  <div className="text-sm text-white whitespace-pre-wrap">{msg.text}</div>
+                                 {msg.status && (
+                                     <div className={`text-[10px] mt-1 font-bold ${msg.status === 'sent' ? 'text-green-500' : 'text-red-400'}`}>
+                                         STATUS: {msg.status.toUpperCase()} 
+                                         {msg.error && <span className="block font-normal text-gray-400">{msg.error}</span>}
+                                     </div>
+                                 )}
                              </div>
                          ))
                      )}
@@ -366,6 +387,71 @@ const WhatsAppConfig: React.FC = () => {
          </div>
       </div>
       
+      {/* 2. Configuration Card */}
+      <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+        <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center justify-between">
+          <span className="flex items-center"><i className="fab fa-whatsapp text-green-500 mr-2"></i> 2. Evolution API Connection</span>
+          <span className={`text-xs px-2 py-1 rounded border uppercase ${
+            connectionStatus === 'connected' ? 'bg-green-100 text-green-700 border-green-200' : 
+            connectionStatus === 'error' ? 'bg-red-100 text-red-700 border-red-200' : 'bg-gray-100 text-gray-500'
+          }`}>
+            {connectionStatus === 'connected' ? 'Online' : connectionStatus === 'error' ? 'Offline' : 'Unknown'}
+          </span>
+        </h2>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">API Base URL</label>
+            <input 
+              type="text" 
+              value={apiUrl} 
+              onChange={(e) => setApiUrl(e.target.value)}
+              className="w-full border p-2 rounded text-sm focus:border-green-500 outline-none"
+              placeholder="https://api.evolution-api.com"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">Instance Name</label>
+            <input 
+              type="text" 
+              value={instanceName} 
+              onChange={(e) => setInstanceName(e.target.value)}
+              className="w-full border p-2 rounded text-sm focus:border-green-500 outline-none"
+              placeholder="EnaCoach"
+            />
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">Global API Token</label>
+            <input 
+              type="password" 
+              value={apiKey} 
+              onChange={(e) => setApiKey(e.target.value)}
+              className="w-full border p-2 rounded text-sm focus:border-green-500 outline-none"
+              placeholder="sk-..."
+            />
+          </div>
+        </div>
+
+        <div className="mt-6 flex space-x-3">
+          <button 
+            onClick={handleSave}
+            className="px-4 py-2 bg-gray-800 text-white rounded text-sm font-medium hover:bg-gray-900 transition"
+          >
+            <i className="fas fa-save mr-2"></i> Save & Sync to Server
+          </button>
+          <button 
+            onClick={handleTestConnection}
+            disabled={isTestingConnection}
+            className={`px-4 py-2 border rounded text-sm font-medium transition flex items-center ${
+              isTestingConnection ? 'bg-gray-100 text-gray-400' : 'bg-white text-gray-700 hover:bg-gray-50 border-gray-300'
+            }`}
+          >
+            {isTestingConnection ? <i className="fas fa-spinner fa-spin mr-2"></i> : <i className="fas fa-plug mr-2"></i>}
+            Test Connection
+          </button>
+        </div>
+      </div>
+
       {/* 1. Webhook Setup (Priority 1) */}
       <div className="bg-yellow-50 p-6 rounded-lg shadow-sm border border-yellow-200">
         <h2 className="text-xl font-bold text-yellow-800 mb-4 flex items-center">
@@ -452,71 +538,6 @@ const WhatsAppConfig: React.FC = () => {
                     Ensure <strong>MESSAGES_UPSERT</strong> event is enabled in Evolution API.
                  </p>
             </div>
-        </div>
-      </div>
-
-      {/* 2. Configuration Card */}
-      <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-        <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center justify-between">
-          <span className="flex items-center"><i className="fab fa-whatsapp text-green-500 mr-2"></i> 2. Evolution API Connection</span>
-          <span className={`text-xs px-2 py-1 rounded border uppercase ${
-            connectionStatus === 'connected' ? 'bg-green-100 text-green-700 border-green-200' : 
-            connectionStatus === 'error' ? 'bg-red-100 text-red-700 border-red-200' : 'bg-gray-100 text-gray-500'
-          }`}>
-            {connectionStatus === 'connected' ? 'Online' : connectionStatus === 'error' ? 'Offline' : 'Unknown'}
-          </span>
-        </h2>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">API Base URL</label>
-            <input 
-              type="text" 
-              value={apiUrl} 
-              onChange={(e) => setApiUrl(e.target.value)}
-              className="w-full border p-2 rounded text-sm focus:border-green-500 outline-none"
-              placeholder="https://api.evolution-api.com"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">Instance Name</label>
-            <input 
-              type="text" 
-              value={instanceName} 
-              onChange={(e) => setInstanceName(e.target.value)}
-              className="w-full border p-2 rounded text-sm focus:border-green-500 outline-none"
-              placeholder="EnaCoach"
-            />
-          </div>
-          <div className="md:col-span-2">
-            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">Global API Token</label>
-            <input 
-              type="password" 
-              value={apiKey} 
-              onChange={(e) => setApiKey(e.target.value)}
-              className="w-full border p-2 rounded text-sm focus:border-green-500 outline-none"
-              placeholder="sk-..."
-            />
-          </div>
-        </div>
-
-        <div className="mt-6 flex space-x-3">
-          <button 
-            onClick={handleSave}
-            className="px-4 py-2 bg-gray-800 text-white rounded text-sm font-medium hover:bg-gray-900 transition"
-          >
-            <i className="fas fa-save mr-2"></i> Save Config
-          </button>
-          <button 
-            onClick={handleTestConnection}
-            disabled={isTestingConnection}
-            className={`px-4 py-2 border rounded text-sm font-medium transition flex items-center ${
-              isTestingConnection ? 'bg-gray-100 text-gray-400' : 'bg-white text-gray-700 hover:bg-gray-50 border-gray-300'
-            }`}
-          >
-            {isTestingConnection ? <i className="fas fa-spinner fa-spin mr-2"></i> : <i className="fas fa-plug mr-2"></i>}
-            Test Connection
-          </button>
         </div>
       </div>
 
