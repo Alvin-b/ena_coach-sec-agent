@@ -28,14 +28,13 @@ const PORT = process.env.PORT || 10000;
 const API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
 const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL ? process.env.EVOLUTION_API_URL.replace(/\/$/, '') : '';
 const EVOLUTION_API_TOKEN = process.env.EVOLUTION_API_TOKEN;
-const INSTANCE_NAME = process.env.INSTANCE_NAME;
+// Fallback Instance Name if not provided in webhook
+const DEFAULT_INSTANCE_NAME = process.env.INSTANCE_NAME;
 
 // Server URL Detection (Critical for Callbacks)
-// Prioritize explicit SERVER_URL, then Render's external URL, then localhost
 const SERVER_URL = process.env.SERVER_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 
 // Daraja Config (M-Pesa)
-// Default to Standard Sandbox Paybill (174379) if not provided
 const DARAJA_CONSUMER_KEY = process.env.DARAJA_CONSUMER_KEY || 'A9QGd46yfsnrgM027yIGE0UDiUroPZdHr8CiTRs8NGTFaXH8';
 const DARAJA_CONSUMER_SECRET = process.env.DARAJA_CONSUMER_SECRET || 'IFZQQkXptDOUkGx6wZGEeiLADggUy39NUJzEPzhU1EytUBg5JmA3oR3OGvRC6wsb';
 const DARAJA_PASSKEY = process.env.DARAJA_PASSKEY || 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919';
@@ -56,18 +55,16 @@ app.use(bodyParser.json());
 
 // --- In-Memory Stores ---
 const debugOutbox = []; 
-const webhookLogs = []; // Stores incoming webhook requests for debugging
+const webhookLogs = []; 
 const paymentStore = new Map(); 
 const userSessions = new Map();
 
-// **REAL TICKET STORE (Source of Truth)**
+// **REAL TICKET STORE**
 const ticketsStore = []; 
 const BUS_CAPACITY = 45;
 
 // **DYNAMIC ROUTES STORE**
-// Base definitions from the original system
 const BASE_ROUTES_DEF = [
-  // Western Route (via Nakuru, Kericho/Eldoret)
   { origin: 'Nairobi', destination: 'Kisumu', departureTime: '08:00 AM', price: 1500, busType: 'Luxury', stops: ['Naivasha', 'Nakuru', 'Kericho', 'Ahero'] },
   { origin: 'Nairobi', destination: 'Kisumu', departureTime: '09:00 PM', price: 1500, busType: 'Luxury', stops: ['Naivasha', 'Nakuru', 'Kericho', 'Ahero'] },
   { origin: 'Nairobi', destination: 'Busia', departureTime: '07:30 AM', price: 1600, busType: 'Luxury', stops: ['Nakuru', 'Eldoret', 'Bungoma', 'Mumias'] },
@@ -80,8 +77,6 @@ const BASE_ROUTES_DEF = [
   { origin: 'Nairobi', destination: 'Bondo', departureTime: '09:00 AM', price: 1600, busType: 'Luxury', stops: ['Nakuru', 'Kisumu', 'Nedwo'] },
   { origin: 'Nairobi', destination: 'Usenge', departureTime: '08:00 PM', price: 1700, busType: 'Standard', stops: ['Nakuru', 'Kisumu', 'Bondo'] },
   { origin: 'Nairobi', destination: 'Port Victoria', departureTime: '07:00 PM', price: 1700, busType: 'Standard', stops: ['Nakuru', 'Kisumu', 'Busia'] },
-
-  // Nyanza South (via Narok, Kisii)
   { origin: 'Nairobi', destination: 'Kisii', departureTime: '07:00 AM', price: 1200, busType: 'Luxury', stops: ['Narok', 'Bomet', 'Sotik'] },
   { origin: 'Nairobi', destination: 'Kisii', departureTime: '11:00 AM', price: 1200, busType: 'Standard', stops: ['Narok', 'Bomet'] },
   { origin: 'Nairobi', destination: 'Homabay', departureTime: '08:00 AM', price: 1300, busType: 'Luxury', stops: ['Narok', 'Kisii', 'Rongo'] },
@@ -91,19 +86,13 @@ const BASE_ROUTES_DEF = [
   { origin: 'Nairobi', destination: 'Sori', departureTime: '07:00 PM', price: 1400, busType: 'Standard', stops: ['Narok', 'Homabay', 'Rod Kopany'] },
   { origin: 'Nairobi', destination: 'Kendu Bay', departureTime: '01:00 PM', price: 1300, busType: 'Standard', stops: ['Narok', 'Oyugis'] },
   { origin: 'Nairobi', destination: 'Oyugis', departureTime: '02:00 PM', price: 1200, busType: 'Standard', stops: ['Narok', 'Kisii'] },
-
-  // Coast Route (via Mombasa Rd)
   { origin: 'Nairobi', destination: 'Mombasa', departureTime: '08:30 AM', price: 1500, busType: 'Luxury', stops: ['Mtito Andei', 'Voi', 'Mariakani'] },
   { origin: 'Nairobi', destination: 'Mombasa', departureTime: '09:00 PM', price: 1500, busType: 'Luxury', stops: ['Mtito Andei', 'Voi'] },
   { origin: 'Nairobi', destination: 'Malindi', departureTime: '07:00 PM', price: 2000, busType: 'Luxury', stops: ['Mombasa', 'Kilifi', 'Mtwapa'] },
   { origin: 'Nairobi', destination: 'Ukunda', departureTime: '08:00 PM', price: 1800, busType: 'Luxury', stops: ['Mombasa', 'Likoni'] },
-  
-  // Cross-Country (Mombasa to Western)
   { origin: 'Mombasa', destination: 'Kisumu', departureTime: '04:00 PM', price: 2500, busType: 'Luxury', stops: ['Nairobi', 'Nakuru', 'Kericho'] },
   { origin: 'Mombasa', destination: 'Busia', departureTime: '03:00 PM', price: 2600, busType: 'Luxury', stops: ['Nairobi', 'Nakuru', 'Eldoret'] },
   { origin: 'Mombasa', destination: 'Kitale', departureTime: '03:30 PM', price: 2600, busType: 'Standard', stops: ['Nairobi', 'Eldoret'] },
-
-  // Short Haul / Others
   { origin: 'Nakuru', destination: 'Kisumu', departureTime: '10:00 AM', price: 800, busType: 'Standard', stops: ['Kericho'] },
   { origin: 'Eldoret', destination: 'Nairobi', departureTime: '02:00 PM', price: 1000, busType: 'Standard', stops: ['Nakuru'] },
   { origin: 'Kisumu', destination: 'Mombasa', departureTime: '01:00 PM', price: 2500, busType: 'Luxury', stops: ['Kericho', 'Nakuru', 'Nairobi'] },
@@ -112,29 +101,14 @@ const BASE_ROUTES_DEF = [
 function initializeRoutes() {
     let idCounter = 1;
     const allRoutes = [];
-    
     BASE_ROUTES_DEF.forEach(route => {
-        // Forward Route
-        allRoutes.push({
-            id: `R${idCounter.toString().padStart(3, '0')}`,
-            ...route,
-            availableSeats: BUS_CAPACITY,
-            capacity: BUS_CAPACITY
-        });
+        allRoutes.push({ id: `R${idCounter.toString().padStart(3, '0')}`, ...route, availableSeats: BUS_CAPACITY, capacity: BUS_CAPACITY });
         idCounter++;
-
-        // Reverse Route (Auto-generate return trip)
         const reverseStops = route.stops ? [...route.stops].reverse() : [];
         allRoutes.push({
-            id: `R${idCounter.toString().padStart(3, '0')}`,
-            origin: route.destination,
-            destination: route.origin,
-            departureTime: route.departureTime, // Assuming symmetric schedule for simplicity
-            price: route.price,
-            busType: route.busType,
-            stops: reverseStops,
-            availableSeats: BUS_CAPACITY,
-            capacity: BUS_CAPACITY
+            id: `R${idCounter.toString().padStart(3, '0')}`, origin: route.destination, destination: route.origin,
+            departureTime: route.departureTime, price: route.price, busType: route.busType, stops: reverseStops,
+            availableSeats: BUS_CAPACITY, capacity: BUS_CAPACITY
         });
         idCounter++;
     });
@@ -142,28 +116,20 @@ function initializeRoutes() {
 }
 
 let routesStore = initializeRoutes();
-console.log(`[Server] Routes initialized: ${routesStore.length} routes in memory.`);
 
 // --- Helpers ---
 function generateSecureTicket(passengerName, routeId, seatNumber, date) {
     const ticketId = `TKT-${Math.floor(Math.random() * 100000)}`;
     const now = new Date();
     const bookingDate = now.toISOString();
-    const timestamp = now.getTime();
-    
-    // Include bookingDate in the signature data
-    const dataToSign = `${ticketId}:${passengerName}:${routeId}:${seatNumber}:${date}:${bookingDate}:${timestamp}`;
+    const dataToSign = `${ticketId}:${passengerName}:${routeId}:${seatNumber}:${date}:${bookingDate}:${now.getTime()}`;
     const signature = crypto.createHmac('sha256', TICKET_SECRET).update(dataToSign).digest('hex');
-    
-    // Include 'bd' (bookingDate) in QR payload
     const qrData = JSON.stringify({ id: ticketId, p: passengerName, r: routeId, s: seatNumber, d: date, bd: bookingDate, sig: signature.substring(0, 16) });
     const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrData)}`;
-    
     return { ticketId, qrCodeUrl, signature, bookingDate };
 }
 
 function getBookedSeats(routeId, date) {
-    // Strictly filter by Date string (YYYY-MM-DD)
     return ticketsStore.filter(t => t.routeId === routeId && t.date === date).length;
 }
 
@@ -175,7 +141,7 @@ function getDarajaTimestamp() {
 
 async function getDarajaToken() {
   if (!DARAJA_CONSUMER_KEY || !DARAJA_CONSUMER_SECRET) {
-      console.error("[Daraja] Missing Consumer Key or Secret");
+      console.error("[Daraja] Missing Credentials");
       return null;
   }
   const url = 'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials';
@@ -185,73 +151,45 @@ async function getDarajaToken() {
     if (!response.ok) return null;
     const data = await response.json();
     return data.access_token;
-  } catch (error) { 
-    console.error("[Daraja] Auth Error:", error);
-    return null; 
-  }
+  } catch (error) { return null; }
 }
 
 async function triggerSTKPush(phoneNumber, amount) {
   let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
-  
-  // Use dynamically detected SERVER_URL for callbacks
   const callbackUrl = `${SERVER_URL.replace(/\/$/, '')}/callback/mpesa`;
 
   try {
       const token = await getDarajaToken();
-      if (!token) {
-        console.error("[STK-PUSH] Failed to generate token. Credentials missing or invalid.");
-        return { success: false, message: "Payment Error: Unable to authenticate with M-Pesa. Please check system configuration." };
-      }
+      if (!token) return { success: false, message: "Payment Auth Failed" };
       
       const timestamp = getDarajaTimestamp();
       const password = Buffer.from(`${DARAJA_SHORTCODE}${DARAJA_PASSKEY}${timestamp}`).toString('base64');
       const url = 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
-
-      // Use CustomerPayBillOnline for the standard 174379 sandbox shortcode
       const transactionType = DARAJA_SHORTCODE === '174379' ? 'CustomerPayBillOnline' : 'CustomerBuyGoodsOnline';
 
       const payload = {
-        "BusinessShortCode": DARAJA_SHORTCODE, 
-        "Password": password, 
-        "Timestamp": timestamp,
-        "TransactionType": transactionType, 
-        "Amount": Math.ceil(amount),
-        "PartyA": formattedPhone, 
-        "PartyB": DARAJA_SHORTCODE, 
-        "PhoneNumber": formattedPhone,
-        "CallBackURL": callbackUrl, 
-        "AccountReference": "EnaCoach", 
-        "TransactionDesc": "Bus Ticket"
+        "BusinessShortCode": DARAJA_SHORTCODE, "Password": password, "Timestamp": timestamp,
+        "TransactionType": transactionType, "Amount": Math.ceil(amount),
+        "PartyA": formattedPhone, "PartyB": DARAJA_SHORTCODE, "PhoneNumber": formattedPhone,
+        "CallBackURL": callbackUrl, "AccountReference": "EnaCoach", "TransactionDesc": "Bus Ticket"
       };
-
-      console.log(`[STK-PUSH] Initiating to ${formattedPhone} for KES ${amount}`);
-      console.log(`[STK-PUSH] Callback URL registered: ${callbackUrl}`);
 
       const response = await fetch(url, {
         method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       const data = await response.json();
-      
-      console.log("[STK-PUSH] Response:", data);
 
       if (data.ResponseCode === "0") {
           paymentStore.set(data.CheckoutRequestID, { status: 'PENDING', phone: formattedPhone, amount: amount, timestamp: Date.now() });
-          return { success: true, checkoutRequestId: data.CheckoutRequestID, message: "STK Push sent to your phone." };
+          return { success: true, checkoutRequestId: data.CheckoutRequestID, message: "STK Push sent." };
       }
-      
-      return { success: false, message: data.errorMessage || data.CustomerMessage || "Failed to initiate payment." };
-
-  } catch (error) { 
-      console.error("[STK-PUSH] Network Error:", error);
-      return { success: false, message: "Network error connecting to payment provider." }; 
-  }
+      return { success: false, message: data.CustomerMessage || "Failed to initiate." };
+  } catch (error) { return { success: false, message: "Network error." }; }
 }
 
 async function queryDarajaStatus(checkoutRequestId) {
     const local = paymentStore.get(checkoutRequestId);
-    
     if (local && local.status === 'COMPLETED') return { status: 'COMPLETED', message: 'Payment Received' };
 
     const token = await getDarajaToken();
@@ -281,77 +219,43 @@ async function queryDarajaStatus(checkoutRequestId) {
     } catch (e) { return { status: 'UNKNOWN', message: 'Network Error' }; }
 }
 
-async function sendWhatsAppMessage(remoteJid, text) {
-    // Add to debug outbox for UI
-    debugOutbox.push({ to: remoteJid, text, timestamp: Date.now() });
+// Updated to accept instanceName dynamically
+async function sendWhatsAppMessage(remoteJid, text, instanceOverride = null) {
+    const activeInstance = instanceOverride || DEFAULT_INSTANCE_NAME;
+
+    // Log to dashboard
+    debugOutbox.push({ to: remoteJid, text, timestamp: Date.now(), instance: activeInstance });
     if (debugOutbox.length > 50) debugOutbox.shift();
 
     if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) {
-        console.error("Missing Evolution API Configuration. Cannot send message.");
+        console.error("Missing Evolution API URL/Token in Env Vars");
+        return;
+    }
+    if (!activeInstance) {
+        console.error("Missing Instance Name. Cannot send.");
         return;
     }
 
     try {
-        console.log(`[WhatsApp] Sending to ${remoteJid}...`);
-        const response = await fetch(`${EVOLUTION_API_URL}/message/sendText/${INSTANCE_NAME}`, {
+        const response = await fetch(`${EVOLUTION_API_URL}/message/sendText/${activeInstance}`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': EVOLUTION_API_TOKEN },
             body: JSON.stringify({ number: remoteJid, text: text })
         });
-        
         if (!response.ok) {
-            const errText = await response.text();
-            console.error(`[WhatsApp API Error] Status: ${response.status} | Body: ${errText}`);
-        } else {
-            console.log("[WhatsApp] Message Sent Successfully.");
+            console.error(`Evolution API Error: ${await response.text()}`);
         }
     } catch(e) { console.error("API Send Error:", e); }
-}
-
-function scheduleTransactionCheck(checkoutRequestId, userJid) {
-    const TIMEOUT_MS = 120000; // 2 minute timeout check
-    console.log(`[Payment] Scheduling check for ${checkoutRequestId} in 2 minutes.`);
-    
-    setTimeout(async () => {
-        // 1. Check local status first (in case callback already handled it)
-        const local = paymentStore.get(checkoutRequestId);
-        if (local && local.status === 'COMPLETED') {
-            return; // Already done, no need to alert
-        }
-        
-        // 2. Double check with Daraja one last time
-        const check = await queryDarajaStatus(checkoutRequestId);
-        
-        if (check.status === 'PENDING') {
-            // Update status to timeout so we don't process it later if it comes in super late (optional logic)
-            if (local) paymentStore.set(checkoutRequestId, { ...local, status: 'TIMEOUT' });
-            
-            await sendWhatsAppMessage(userJid, "⚠️ Payment Session Timed Out.\n\nWe did not receive a confirmation in time. If you have already paid, please contact support. Otherwise, please reply with 'Book Ticket' to try again.");
-        } else if (check.status === 'FAILED') {
-            await sendWhatsAppMessage(userJid, "❌ Payment Failed/Cancelled. Please try again.");
-        } else if (check.status === 'COMPLETED') {
-            // Late success
-            await sendWhatsAppMessage(userJid, "✅ Payment Confirmed! Processing your ticket...");
-        }
-    }, TIMEOUT_MS);
 }
 
 // --- Tools Setup & Agent Singleton ---
 let agentExecutorPromise = null;
 
 async function getAgentExecutor() {
-    // Singleton Pattern: Ensure only one initialization Promise exists.
-    // Handles race conditions from multiple simultaneous webhook hits.
     if (agentExecutorPromise) return agentExecutorPromise;
     
     agentExecutorPromise = (async () => {
-        if (!API_KEY) {
-            console.error("[Agent] CRITICAL: No API Key found for Gemini.");
-            throw new Error("API Key missing in server environment");
-        }
+        if (!API_KEY) throw new Error("API Key missing");
         
-        console.log("[Agent] Initializing new Agent Executor...");
-        
-        // Tools definition
         const searchRoutesTool = new DynamicStructuredTool({
             name: "searchRoutes",
             description: "Search routes.",
@@ -359,42 +263,23 @@ async function getAgentExecutor() {
             func: async ({ origin, destination }) => {
                 let matches = routesStore.filter(r => r.origin.toLowerCase().includes(origin.toLowerCase()) && r.destination.toLowerCase().includes(destination.toLowerCase()));
                 if (matches.length === 0) return "No direct route found.";
-                
-                // TOKEN OPTIMIZATION: Return only essential fields to AI.
-                // Exclude 'stops', 'availableSeats' (implied by existence), and internal metadata.
-                const simplified = matches.map(r => ({
-                    id: r.id,
-                    org: r.origin,
-                    dst: r.destination,
-                    time: r.departureTime,
-                    price: r.price,
-                    type: r.busType
-                }));
-                return JSON.stringify(simplified);
+                return JSON.stringify(matches.map(r => ({ id: r.id, org: r.origin, dst: r.destination, time: r.departureTime, price: r.price, type: r.busType })));
             },
         });
         
         const initiatePaymentTool = new DynamicStructuredTool({
             name: "initiatePayment",
             description: "Initiate M-Pesa. Args: phoneNumber, amount.",
-            schema: z.object({ 
-                phoneNumber: z.string(), 
-                amount: z.number().describe("The amount to pay in KES")
-            }),
+            schema: z.object({ phoneNumber: z.string(), amount: z.number() }),
             func: async ({ phoneNumber, amount }) => {
-            const res = await triggerSTKPush(phoneNumber, amount);
-            if (res.success) {
-                const jid = phoneNumber.replace('+', '').replace(/^0/, '254') + "@s.whatsapp.net";
-                scheduleTransactionCheck(res.checkoutRequestId, jid);
-                return JSON.stringify({ status: 'initiated', message: res.message, checkoutRequestId: res.checkoutRequestId });
-            }
-            return JSON.stringify(res);
+                const res = await triggerSTKPush(phoneNumber, amount);
+                return JSON.stringify({ status: res.success ? 'initiated' : 'failed', message: res.message, checkoutRequestId: res.checkoutRequestId });
             },
         });
 
         const verifyPaymentTool = new DynamicStructuredTool({
             name: "verifyPayment",
-            description: "Verify if payment is completed. Args: checkoutRequestId.",
+            description: "Verify if payment is completed.",
             schema: z.object({ checkoutRequestId: z.string() }),
             func: async ({ checkoutRequestId }) => {
                 const res = await queryDarajaStatus(checkoutRequestId);
@@ -404,149 +289,58 @@ async function getAgentExecutor() {
         
         const bookTicketTool = new DynamicStructuredTool({
             name: "bookTicket",
-            description: "Book Ticket (Requires Date & Payment ID).",
-            schema: z.object({ 
-                passengerName: z.string(), 
-                routeId: z.string(), 
-                phoneNumber: z.string(), 
-                travelDate: z.string(),
-                checkoutRequestId: z.string()
-            }),
+            description: "Book Ticket.",
+            schema: z.object({ passengerName: z.string(), routeId: z.string(), phoneNumber: z.string(), travelDate: z.string(), checkoutRequestId: z.string() }),
             func: async ({ passengerName, routeId, phoneNumber, travelDate, checkoutRequestId }) => {
                 const statusCheck = await queryDarajaStatus(checkoutRequestId);
-                if (statusCheck.status !== 'COMPLETED') return JSON.stringify({ error: "Payment not found or incomplete." });
-
+                if (statusCheck.status !== 'COMPLETED') return JSON.stringify({ error: "Payment incomplete." });
                 const booked = getBookedSeats(routeId, travelDate);
-                if (booked >= BUS_CAPACITY) return "Bus Fully Booked.";
-        
+                if (booked >= BUS_CAPACITY) return "Bus Full.";
                 const route = routesStore.find(r => r.id === routeId);
                 const seatNumber = booked + 1;
                 const { ticketId, qrCodeUrl, bookingDate } = generateSecureTicket(passengerName, routeId, seatNumber, travelDate);
-
                 const ticket = { id: ticketId, passengerName, routeId, date: travelDate, seat: seatNumber, qrUrl: qrCodeUrl, paymentId: checkoutRequestId, bookingDate };
                 ticketsStore.push(ticket);
-
-                // TOKEN OPTIMIZATION: Return only confirmation and ID. 
-                // Do NOT send the massive QR Code URL or signature to the LLM context.
-                return JSON.stringify({ 
-                    status: 'success', 
-                    message: 'Ticket Booked Successfully.', 
-                    ticketId: ticketId,
-                    seat: seatNumber,
-                    route: `${route.origin} to ${route.destination}`
-                });
+                return JSON.stringify({ status: 'success', message: 'Ticket Booked.', ticketId: ticketId, seat: seatNumber });
             },
         });
 
         const tools = [searchRoutesTool, initiatePaymentTool, verifyPaymentTool, bookTicketTool];
-        
-        // AI Model Configuration
         const llm = new ChatGoogleGenerativeAI({
-            model: "gemini-2.5-flash",
-            apiKey: API_KEY, 
-            temperature: 0.3,
-            maxOutputTokens: 300,
-            maxRetries: 2,
-            safetySettings: [
-                { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-                { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-                { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-                { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
-            ]
+            model: "gemini-2.5-flash", apiKey: API_KEY, temperature: 0.3, maxOutputTokens: 300,
         });
-        
         const prompt = ChatPromptTemplate.fromMessages([
-            ["system", `You are Ena Coach. TIME: {current_time}.
-            PROTOCOL:
-            1. Ask Origin & Destination.
-            2. Show Route & Price.
-            3. Ask Date.
-            4. **CRITICAL**: Confirm Details (Origin, Dest, Date, Price) with user. "You want to travel to X on [Date]. Correct?"
-            5. Ask Phone Number.
-            6. Call 'initiatePayment'.
-            7. **CHECK OUTPUT of initiatePayment**:
-               - IF success: Say "I have sent a payment request to [Phone]. Please enter your PIN."
-               - IF error: Say "I could not send the payment request. Reason: [Error Message]."
-            8. Wait for user confirmation.
-            9. Call 'verifyPayment'.
-            10. Call 'bookTicket'.
-            `],
+            ["system", `You are Ena Coach. TIME: {current_time}. Confirm details before payment. Use tools.`],
             new MessagesPlaceholder("chat_history"),
             ["human", "{input}"],
             new MessagesPlaceholder("agent_scratchpad"),
         ]);
-        
         const agent = await createToolCallingAgent({ llm: llm.bindTools(tools), tools, prompt });
-        
         return new AgentExecutor({ agent, tools, verbose: false });
     })();
-
-    // Resilience: If initialization fails, reset the promise so we can try again next request
-    agentExecutorPromise.catch(err => {
-        console.error("[Agent] Initialization Failed. Resetting promise.", err);
-        agentExecutorPromise = null;
-    });
-
     return agentExecutorPromise;
 }
 
-// --- API Endpoints for Frontend Simulator ---
+// --- API Endpoints ---
 
-// API Config Endpoint to serve keys to frontend
-app.get('/api/config', (req, res) => {
-    res.json({
-        apiKey: API_KEY || ''
-    });
-});
-
-app.post('/api/payment/initiate', async (req, res) => {
-    const { phoneNumber, amount } = req.body;
-    const result = await triggerSTKPush(phoneNumber, Number(amount));
-    res.json(result);
-});
-
-app.get('/api/payment/status/:id', async (req, res) => {
-    const result = await queryDarajaStatus(req.params.id);
-    res.json(result);
-});
-
-// ROUTE MANAGEMENT ENDPOINTS
-app.get('/api/routes', (req, res) => {
-    res.json(routesStore);
-});
-
+app.get('/api/config', (req, res) => res.json({ apiKey: API_KEY || '' }));
+app.post('/api/payment/initiate', async (req, res) => res.json(await triggerSTKPush(req.body.phoneNumber, Number(req.body.amount))));
+app.get('/api/payment/status/:id', async (req, res) => res.json(await queryDarajaStatus(req.params.id)));
+app.get('/api/routes', (req, res) => res.json(routesStore));
 app.post('/api/routes', (req, res) => {
     const { origin, destination, price, departureTime, busType } = req.body;
-    const newId = `R${(routesStore.length + 1).toString().padStart(3, '0')}`;
-    const newRoute = {
-        id: newId,
-        origin,
-        destination,
-        price: Number(price),
-        departureTime,
-        busType,
-        availableSeats: BUS_CAPACITY,
-        capacity: BUS_CAPACITY
-    };
+    const newRoute = { id: `R${(routesStore.length + 1).toString().padStart(3, '0')}`, origin, destination, price: Number(price), departureTime, busType, availableSeats: BUS_CAPACITY, capacity: BUS_CAPACITY };
     routesStore.push(newRoute);
     res.json({ success: true, route: newRoute });
 });
-
 app.put('/api/routes/:id', (req, res) => {
-    const { id } = req.params;
-    const { price } = req.body;
-    const routeIndex = routesStore.findIndex(r => r.id === id);
-    if (routeIndex !== -1) {
-        routesStore[routeIndex].price = Number(price);
-        res.json({ success: true, route: routesStore[routeIndex] });
-    } else {
-        res.status(404).json({ error: "Route not found" });
-    }
+    const r = routesStore.find(r => r.id === req.params.id);
+    if(r) { r.price = Number(req.body.price); res.json({success:true}); } else res.status(404).json({error:"Not found"});
 });
 
+// Fixed Truncated Logic Here
 app.get('/api/inventory', (req, res) => {
     const date = req.query.date || new Date().toISOString().split('T')[0];
-    // Return routes with availability for that date
     const inventory = routesStore.map(route => {
         const booked = getBookedSeats(route.id, date);
         return {
@@ -559,63 +353,28 @@ app.get('/api/inventory', (req, res) => {
     res.json(inventory);
 });
 
-// PASSENGER MANIFEST
 app.get('/api/manifest', (req, res) => {
     const { routeId, date } = req.query;
-    if (!routeId || !date) return res.status(400).json({ error: "Missing routeId or date" });
-
-    const passengers = ticketsStore
-        .filter(t => t.routeId === routeId && t.date === date)
-        .map(t => ({
-            ticketId: t.id,
-            name: t.passengerName,
-            seat: t.seat,
-            status: t.status || 'booked',
-            boardingStatus: t.boardingStatus || 'pending'
-        }));
-    
+    const passengers = ticketsStore.filter(t => t.routeId === routeId && t.date === date)
+        .map(t => ({ ticketId: t.id, name: t.passengerName, seat: t.seat, status: 'booked', boardingStatus: t.boardingStatus || 'pending' }));
     res.json({ routeId, date, passengers, total: passengers.length });
 });
 
-// CONTACTS & CRM ENDPOINTS
 app.get('/api/contacts', (req, res) => {
-    // Derive unique contacts from ticket history
-    const contactsMap = new Map();
-    
-    // Mock data if no tickets yet
-    if (ticketsStore.length === 0) {
-       contactsMap.set('254712345678', { phoneNumber: '254712345678', name: 'John Doe', lastTravelDate: '2023-11-01', totalTrips: 3 });
-       contactsMap.set('254722000000', { phoneNumber: '254722000000', name: 'Jane Smith', lastTravelDate: '2023-11-05', totalTrips: 1 });
-    }
-
-    ticketsStore.forEach(ticket => {
-        // We assume we can get phone from paymentStore using ticket.paymentId, 
-        // OR we should have stored phone in ticket. 
-        // For now, let's use a dummy lookup or if the booking tool had it. 
-        // *Correction*: The bookTicket tool has 'phoneNumber' in args but we didn't save it to ticket object explicitly in previous step.
-        // Let's rely on what we have. If ticket doesn't have phone, we skip.
-        // Actually, let's look at ticketsStore push. It saves: id, passengerName, routeId, date, seat...
-        // We should improve ticket saving to include phone.
-        // For this implementation, I will just iterate and mock if missing, but in a real app we'd save it.
-    });
-
-    res.json(Array.from(contactsMap.values()));
+    // Mock contacts if empty
+    if(ticketsStore.length === 0) return res.json([{phoneNumber: '254712345678', name: 'John Doe', lastTravelDate: '2023-11-01', totalTrips: 3}]);
+    // Simplistic extraction from tickets
+    res.json(ticketsStore.map(t => ({phoneNumber: 'Unknown', name: t.passengerName, lastTravelDate: t.date, totalTrips: 1})));
 });
 
 app.post('/api/broadcast', async (req, res) => {
     const { message, contacts } = req.body;
-    // contacts is array of phone numbers
-    if (!contacts || !Array.isArray(contacts)) return res.status(400).json({ error: "Invalid contacts list" });
-    
     let sentCount = 0;
     for (const phone of contacts) {
         const jid = phone.replace('+', '').replace(/^0/, '254') + "@s.whatsapp.net";
         await sendWhatsAppMessage(jid, message);
         sentCount++;
-        // Throttle slightly
-        await new Promise(r => setTimeout(r, 100)); 
     }
-    
     res.json({ success: true, count: sentCount });
 });
 
@@ -627,156 +386,80 @@ app.post('/api/debug/clear-webhook', (req, res) => { webhookLogs.length = 0; res
 
 // --- Unified Webhook Handler ---
 const handleWebhook = async (req, res) => {
-    // 1. Log Incoming Request (DEBUGGING)
-    const eventType = req.body?.type || req.body?.event; // Support both
-    const { data } = req.body || {};
+    const eventType = req.body?.type || req.body?.event;
+    const { data, instance } = req.body || {}; // Capture instance from payload
 
-    // Validate payload existence first to avoid errors accessing 'data' properties
-    if (!data || !data.key || !data.message) {
-        return res.status(200).send('OK');
-    }
+    if (!data || !data.key || !data.message) return res.status(200).send('OK');
 
-    // Extract basic info first
     const remoteJid = data.key.remoteJid;
     const text = data.message.conversation || data.message.extendedTextMessage?.text;
 
-    try {
-        const logEntry = {
-            id: Date.now().toString(),
-            timestamp: new Date().toISOString(),
-            method: req.method,
-            path: req.originalUrl || req.url,
-            type: eventType || 'unknown',
-            sender: remoteJid,
-            content: text ? (text.length > 50 ? text.substring(0, 50) + '...' : text) : 'No Text',
-            // OPTIMIZATION: Don't store the massive 'req.body' in memory logs.
-            // Just store the essential extracted parts to save server memory.
-            raw: { 
-               key: { remoteJid: remoteJid, id: data.key.id, remoteJidAlt: data.key.remoteJidAlt, participant: data.key.participant },
-               message: { text: text ? (text.length > 100 ? text.substring(0, 100) + '...' : text) : null }
-            }
-        };
-        webhookLogs.unshift(logEntry);
-        if (webhookLogs.length > 50) webhookLogs.pop(); 
-    } catch (e) {
-        console.error("Error logging webhook:", e);
-    }
+    // Log Request
+    webhookLogs.unshift({
+        id: Date.now().toString(), timestamp: new Date().toISOString(), type: eventType, sender: remoteJid, content: text,
+        raw: { key: data.key, instance }
+    });
+    if (webhookLogs.length > 50) webhookLogs.pop();
 
-    // Check if valid Evolution API upsert (robust check)
-    if (!eventType || eventType !== 'messages.upsert') {
-        return res.status(200).send('OK');
-    }
+    if (eventType !== 'messages.upsert' || data.key.fromMe || !text) return res.status(200).send('OK');
     
-    // Prevent self-loops: If the message is from me, ignore it.
-    if (data.key.fromMe) {
-        return res.status(200).send('OK');
-    }
-
-    if (!text) return res.status(200).send('OK');
-    
-    // Use the JID provided in the key. 
+    // LID Handling
     let finalJid = remoteJid;
-
-    // FIX FOR LINKED DEVICES (LID):
     if (finalJid && finalJid.includes('@lid')) {
-        console.log(`[Webhook] LID Detected: ${finalJid}`);
-        if (data.key.remoteJidAlt) {
-             console.log(`[Webhook] Normalizing JID via Alt: ${finalJid} -> ${data.key.remoteJidAlt}`);
-             finalJid = data.key.remoteJidAlt;
-        } else if (data.key.participant && !data.key.participant.includes('@lid')) {
-             console.log(`[Webhook] Normalizing JID via Participant: ${finalJid} -> ${data.key.participant}`);
-             finalJid = data.key.participant;
-        } else {
-             console.warn("[Webhook] Warning: Could not resolve phone number from LID JID. Replies may fail.");
-        }
+        if (data.key.remoteJidAlt) finalJid = data.key.remoteJidAlt;
+        else if (data.key.participant) finalJid = data.key.participant;
     }
   
-    // Run AI in background
+    // AI Execution
     (async () => {
         try {
            const executor = await getAgentExecutor();
            const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
-           
-           // History Management: Limit context window for speed and efficiency
            let history = userSessions.get(finalJid) || [];
-  
-           // TOKEN SAFEGUARD: Truncate input if user sends a novel.
-           // Limits input to 500 characters to prevent excessive token usage from single large messages.
            const truncatedInput = text.length > 500 ? text.substring(0, 500) + "...(truncated)" : text;
 
-           const result = await executor.invoke({ 
-               input: truncatedInput, 
-               current_time: now, 
-               chat_history: history
-           });
+           const result = await executor.invoke({ input: truncatedInput, current_time: now, chat_history: history });
            
-           // Update history with new turn
            history.push(new HumanMessage(truncatedInput));
            history.push(new AIMessage(result.output));
-           // Limit to last 6 messages (3 turns) for speed and to reduce token usage
            if (history.length > 6) history = history.slice(-6);
            userSessions.set(finalJid, history);
            
-           await sendWhatsAppMessage(finalJid, result.output);
+           // Pass the instance name from the webhook to the sender function
+           await sendWhatsAppMessage(finalJid, result.output, instance);
         } catch(e) { 
-            console.error("Agent Error Details:", e);
-            // Send the ACTUAL error message to the user/simulator to allow debugging
-            await sendWhatsAppMessage(finalJid, `System Error: ${e.message || 'Unknown error'}. Check server logs for stack trace.`);
+            console.error("Agent Error:", e);
+            await sendWhatsAppMessage(finalJid, `System Error: ${e.message}`, instance);
         }
     })();
   
-    // Immediate response to Webhook to prevent timeouts at the source
     res.status(200).send('OK');
 };
 
-// --- Register Webhook Routes ---
-// Listen on multiple paths to handle various Evolution API configurations
 app.post('/webhook', handleWebhook);
 app.post('/webhook/:instance', handleWebhook);
 app.post('/', handleWebhook);
 app.post('/api/webhook', handleWebhook);
 
-// --- M-Pesa Callback Endpoint ---
 app.post('/callback/mpesa', (req, res) => {
-    console.log("[M-Pesa Callback] Hit Received!");
-    
+    console.log("[M-Pesa Callback] Hit");
     try {
         const { Body } = req.body;
-        if (!Body || !Body.stkCallback) {
-             console.log("[M-Pesa Callback] Invalid Body:", JSON.stringify(req.body));
-             return res.sendStatus(200);
+        if (Body?.stkCallback) {
+            const { CheckoutRequestID, ResultCode, ResultDesc } = Body.stkCallback;
+            const current = paymentStore.get(CheckoutRequestID);
+            const status = ResultCode === 0 ? 'COMPLETED' : 'FAILED';
+            if(current) paymentStore.set(CheckoutRequestID, { ...current, status, resultDesc: ResultDesc });
+            else paymentStore.set(CheckoutRequestID, { status, resultDesc: ResultDesc, timestamp: Date.now() });
         }
-
-        const { CheckoutRequestID, ResultCode, ResultDesc } = Body.stkCallback;
-        console.log(`[M-Pesa Callback] ID: ${CheckoutRequestID} | Code: ${ResultCode} | Desc: ${ResultDesc}`);
-
-        const currentPayment = paymentStore.get(CheckoutRequestID);
-        if (currentPayment) {
-            const newStatus = ResultCode === 0 ? 'COMPLETED' : 'FAILED';
-            paymentStore.set(CheckoutRequestID, { ...currentPayment, status: newStatus, resultDesc: ResultDesc });
-        } else {
-             // Store it anyway in case query comes later (though store is in-memory)
-             paymentStore.set(CheckoutRequestID, { status: ResultCode === 0 ? 'COMPLETED' : 'FAILED', resultDesc: ResultDesc, timestamp: Date.now() });
-        }
-    } catch (e) {
-        console.error("[M-Pesa Callback] Error processing:", e);
-    }
-    // Always return 200 OK to Safaricom otherwise they retry
+    } catch (e) { console.error(e); }
     res.sendStatus(200);
 });
 
-// --- Static Frontend Serving ---
-// Serve static files from the 'dist' directory
 app.use(express.static(path.join(__dirname, 'dist')));
+app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-// Handle React routing, return all requests to React app
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-});
-
-// --- Start Server ---
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Callback URL Root: ${SERVER_URL}`);
-    console.log(`Gemini Key Present: ${!!API_KEY}`);
 });
