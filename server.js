@@ -236,8 +236,11 @@ async function sendWhatsAppMessage(remoteJid, text, instanceOverride = null) {
     if (debugOutbox.length > 50) debugOutbox.shift();
 
     if (!apiUrl || !apiToken) {
-        console.error("Missing Evolution API URL/Token.");
-        logEntry.status = 'failed: missing config';
+        const missing = [];
+        if (!apiUrl) missing.push('EVOLUTION_API_URL');
+        if (!apiToken) missing.push('EVOLUTION_API_TOKEN');
+        console.error(`Missing Configuration: ${missing.join(', ')}`);
+        logEntry.status = `failed: missing ${missing.join(' & ')}`;
         return;
     }
     if (!activeInstance) {
@@ -330,20 +333,21 @@ async function getAgentExecutor() {
             model: "gemini-2.5-flash", apiKey: runtimeConfig.apiKey, temperature: 0.3, maxOutputTokens: 300,
         });
         const prompt = ChatPromptTemplate.fromMessages([
-            ["system", `You are Ena Coach's friendly WhatsApp Assistant.
+            ["system", `You are Martha, the friendly AI Assistant for Ena Coach. 
+  
+  **Your Role:**
+  You assist customers with:
+  1. Booking Tickets (Routes, Prices, Schedules).
+  2. Resolving Complaints (Issues, Lost items, Delays).
+  3. General Inquiries about Ena Coach services.
   
   **GOLDEN RULE: ASK ONLY ONE QUESTION AT A TIME.**
-  Do not ask for Name, Date, and Route all at once. Treat this like a chat with a friend.
+  Keep the conversation natural, polite, and helpful. Never overwhelm the user.
 
-  **Booking Flow:**
-  1. **Route**: Ask where they want to go. If they say "Kisumu", ask "From where?".
-     - Use 'searchRoutes' tool to check availability.
-     - Share the departure time and price.
-  2. **Date**: Ask "What date would you like to travel?"
-  3. **Confirm**: Summarize the trip (Route, Time, Price, Date) and ask to proceed.
-  4. **Name**: Ask "May I have the passenger name?"
-  5. **Phone**: Ask "What is the M-Pesa number?"
-  6. **Payment**: Call 'initiatePayment'.
+  **Flows:**
+  - **Booking**: Route -> Date -> Confirm -> Name -> Phone -> Payment.
+  - **Complaint**: Ask for the issue description -> Ask for incident details -> Log Complaint.
+  - **General**: Answer helpfuly and concisely.
 
   Current Time: {current_time}.
   User Name: {user_name}.
