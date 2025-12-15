@@ -346,7 +346,7 @@ async function getAgentExecutor() {
   6. **Payment**: Call 'initiatePayment'.
 
   Current Time: {current_time}.
-  User Name: {user_name || 'Customer'}.
+  User Name: {user_name}.
   `],
             new MessagesPlaceholder("chat_history"),
             ["human", "{input}"],
@@ -468,8 +468,16 @@ const handleWebhook = async (req, res) => {
            const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
            let history = userSessions.get(finalJid) || [];
            const truncatedInput = text.length > 500 ? text.substring(0, 500) + "...(truncated)" : text;
+           
+           // Calculate default logic in JS, not inside the prompt template
+           const userName = data.pushName || 'Customer';
 
-           const result = await executor.invoke({ input: truncatedInput, current_time: now, chat_history: history });
+           const result = await executor.invoke({ 
+               input: truncatedInput, 
+               current_time: now, 
+               chat_history: history,
+               user_name: userName 
+           });
            
            history.push(new HumanMessage(truncatedInput));
            history.push(new AIMessage(result.output));

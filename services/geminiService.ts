@@ -212,6 +212,7 @@ export class GeminiService {
         **Important:** 
         - If the user gives multiple details at once (e.g., "I want to go to Kisumu tomorrow"), do NOT ask for the date again. Skip to the next missing step.
         - Be concise and polite.
+        User Name: Customer.
         `,
         tools: [{
           functionDeclarations: [searchRoutesTool, initiatePaymentTool, verifyPaymentTool, bookTicketTool, logComplaintTool, trackBusTool]
