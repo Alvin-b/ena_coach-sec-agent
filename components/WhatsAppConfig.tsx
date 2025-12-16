@@ -95,6 +95,19 @@ const WhatsAppConfig: React.FC = () => {
   const handleSimulateWebhook = async () => {
       if (!simMessage) return;
       setSimLoading(true);
+
+      // --- CRITICAL FIX: FORCE SYNC CONFIG TO SERVER ---
+      // This ensures the server has the latest keys from the input fields before processing the simulation.
+      try {
+          await fetch('/api/config/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiUrl, apiToken: apiKey, instanceName })
+          });
+      } catch (e) {
+          addLog("Warning: Could not auto-sync config to server. Simulation might fail.");
+      }
+      // -------------------------------------------------
       
       // Construct exact Evolution API payload
       const payload = {

@@ -382,7 +382,7 @@ app.post('/api/config/update', (req, res) => {
     if (apiUrl) runtimeConfig.evolutionUrl = apiUrl.replace(/\/$/, '');
     if (apiToken) runtimeConfig.evolutionToken = apiToken;
     if (instanceName) runtimeConfig.instanceName = instanceName;
-    console.log("[Config] Runtime config updated via Dashboard:", runtimeConfig.instanceName);
+    console.log("[Config] Runtime config updated via Dashboard. Instance:", runtimeConfig.instanceName, "URL:", runtimeConfig.evolutionUrl);
     
     // Reset agent executor if API Key changes (not implemented in UI but supported here)
     if (req.body.apiKey) {
