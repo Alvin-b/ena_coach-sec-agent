@@ -251,7 +251,13 @@ async function sendWhatsAppMessage(remoteJid, text, instanceOverride = null) {
         const missing = [];
         if (!apiUrl) missing.push('EVOLUTION_API_URL');
         if (!apiToken) missing.push('EVOLUTION_API_TOKEN');
-        console.error(`Missing Configuration: ${missing.join(', ')}`);
+        
+        console.error(`[Message Fail] Missing Config. API_URL present: ${!!apiUrl}, API_TOKEN present: ${!!apiToken}`);
+        console.error(`[Message Fail] Current Runtime State:`, { 
+            url: runtimeConfig.evolutionUrl, 
+            tokenLength: runtimeConfig.evolutionToken ? runtimeConfig.evolutionToken.length : 0 
+        });
+
         logEntry.status = `failed: missing ${missing.join(' & ')}`;
         return;
     }
@@ -378,13 +384,25 @@ async function getAgentExecutor() {
 
 // Runtime Configuration Endpoint
 app.post('/api/config/update', (req, res) => {
-    const { apiUrl, apiToken, instanceName } = req.body;
-    if (apiUrl) runtimeConfig.evolutionUrl = apiUrl.replace(/\/$/, '');
-    if (apiToken) runtimeConfig.evolutionToken = apiToken;
-    if (instanceName) runtimeConfig.instanceName = instanceName;
-    console.log("[Config] Runtime config updated via Dashboard. Instance:", runtimeConfig.instanceName, "URL:", runtimeConfig.evolutionUrl);
+    // Explicitly check req.body in logs to debug
+    console.log("[Config] Update Request Received. Body keys:", Object.keys(req.body));
     
-    // Reset agent executor if API Key changes (not implemented in UI but supported here)
+    const { apiUrl, apiToken, instanceName } = req.body;
+    
+    if (apiUrl) runtimeConfig.evolutionUrl = apiUrl.replace(/\/$/, '');
+    
+    // STRICTER CHECK: If key exists in body (even empty), update it.
+    if (req.body.apiToken !== undefined) {
+        runtimeConfig.evolutionToken = req.body.apiToken;
+        console.log(`[Config] Token updated. New length: ${runtimeConfig.evolutionToken.length}`);
+    } else if (apiToken) {
+        // Fallback for previous destructured logic
+        runtimeConfig.evolutionToken = apiToken;
+    }
+
+    if (instanceName) runtimeConfig.instanceName = instanceName;
+    
+    // Reset agent executor if API Key changes
     if (req.body.apiKey) {
         runtimeConfig.apiKey = req.body.apiKey;
         agentExecutorPromise = null;

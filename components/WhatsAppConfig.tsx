@@ -97,7 +97,8 @@ const WhatsAppConfig: React.FC = () => {
       setSimLoading(true);
 
       // --- CRITICAL FIX: FORCE SYNC CONFIG TO SERVER ---
-      // This ensures the server has the latest keys from the input fields before processing the simulation.
+      addLog(`[Syncing Config] Token Length: ${apiKey ? apiKey.length : 0} (If 0, input is empty)`);
+      
       try {
           await fetch('/api/config/update', {
             method: 'POST',
