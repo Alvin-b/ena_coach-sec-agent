@@ -33,6 +33,16 @@ const runtimeConfig = {
     instanceName: process.env.INSTANCE_NAME || 'EnaCoach'
 };
 
+// --- Startup Diagnostics ---
+console.log("------------------------------------------------");
+console.log("🚀 ENA COACH SERVER STARTING...");
+console.log(`Port: ${PORT}`);
+console.log(`Gemini API Key: ${runtimeConfig.apiKey ? "✅ Loaded" : "❌ Missing"}`);
+console.log(`Evolution API URL: ${runtimeConfig.evolutionUrl ? `✅ Loaded (${runtimeConfig.evolutionUrl})` : "❌ Missing (Check .env)"}`);
+console.log(`Evolution API Token: ${runtimeConfig.evolutionToken ? "✅ Loaded" : "❌ Missing (Check .env)"}`);
+console.log(`Instance Name: ${runtimeConfig.instanceName}`);
+console.log("------------------------------------------------");
+
 // Server URL Detection (Critical for Callbacks)
 const SERVER_URL = process.env.SERVER_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 
@@ -221,11 +231,13 @@ async function queryDarajaStatus(checkoutRequestId) {
     } catch (e) { return { status: 'UNKNOWN', message: 'Network Error' }; }
 }
 
-// Updated to use runtime config and better logging
+// Updated to use runtime config AND dynamic fallback
 async function sendWhatsAppMessage(remoteJid, text, instanceOverride = null) {
-    const activeInstance = instanceOverride || runtimeConfig.instanceName;
-    const apiUrl = runtimeConfig.evolutionUrl;
-    const apiToken = runtimeConfig.evolutionToken;
+    // 1. Try Runtime Config (set via Dashboard)
+    // 2. Fallback to process.env (set via .env file)
+    const activeInstance = instanceOverride || runtimeConfig.instanceName || process.env.INSTANCE_NAME || 'EnaCoach';
+    const apiUrl = (runtimeConfig.evolutionUrl || process.env.EVOLUTION_API_URL || '').replace(/\/$/, '');
+    const apiToken = runtimeConfig.evolutionToken || process.env.EVOLUTION_API_TOKEN;
 
     // Sanitize JID: remove @s.whatsapp.net to get plain number, as Evolution API often expects strict numbers
     const cleanNumber = remoteJid ? remoteJid.replace(/@s\.whatsapp\.net|@lid/g, '') : '';
