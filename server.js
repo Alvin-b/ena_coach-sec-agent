@@ -31,11 +31,19 @@ const runtimeConfig = {
     evolutionToken: process.env.EVOLUTION_API_TOKEN || '',
     instanceName: process.env.INSTANCE_NAME || 'EnaCoach',
     // M-Pesa (Daraja)
-    darajaKey: process.env.DARAJA_CONSUMER_KEY || 'A9QGd46yfsnrgM027yIGE0UDiUroPZdHr8CiTRs8NGTFaXH8',
-    darajaSecret: process.env.DARAJA_CONSUMER_SECRET || 'IFZQQkXptDOUkGx6wZGEeiLADggUy39NUJzEPzhU1EytUBg5JmA3oR3OGvRC6wsb',
-    darajaPasskey: process.env.DARAJA_PASSKEY || 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919',
-    darajaShortcode: process.env.DARAJA_SHORTCODE || '174379',
+    darajaEnv: process.env.DARAJA_ENV || 'sandbox', // 'sandbox' or 'production'
+    darajaType: process.env.DARAJA_TYPE || 'Paybill', // 'Paybill' or 'Till'
+    darajaKey: process.env.DARAJA_CONSUMER_KEY || '',
+    darajaSecret: process.env.DARAJA_CONSUMER_SECRET || '',
+    darajaPasskey: process.env.DARAJA_PASSKEY || '',
+    darajaShortcode: process.env.DARAJA_SHORTCODE || '',
+    darajaAccountRef: process.env.DARAJA_ACCOUNT_REF || 'ENA_COACH',
 };
+
+// Dynamic URL helper to ensure environment changes apply immediately
+const getDarajaBaseUrl = () => runtimeConfig.darajaEnv === 'production' 
+    ? 'https://api.safaricom.co.ke' 
+    : 'https://sandbox.safaricom.co.ke';
 
 const TICKET_SECRET = process.env.TICKET_SECRET || 'ENA_SUPER_SECRET_KEY_2025';
 const SERVER_URL = process.env.SERVER_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
@@ -54,8 +62,6 @@ const debugOutbox = [];
 const webhookLogs = []; 
 const paymentStore = new Map(); // CheckoutRequestID -> Details
 const userSessions = new Map();
-const ticketsStore = []; 
-const BUS_CAPACITY = 45;
 
 // --- Daraja M-Pesa Core Logic ---
 
@@ -67,7 +73,7 @@ function getDarajaTimestamp() {
 async function getDarajaToken() {
   const auth = Buffer.from(`${runtimeConfig.darajaKey}:${runtimeConfig.darajaSecret}`).toString('base64');
   try {
-    const response = await fetch('https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials', {
+    const response = await fetch(`${getDarajaBaseUrl()}/oauth/v1/generate?grant_type=client_credentials`, {
       headers: { 'Authorization': `Basic ${auth}` }
     });
     if (!response.ok) {
@@ -95,7 +101,9 @@ async function triggerSTKPush(phoneNumber, amount) {
       const token = tokenResult;
       const timestamp = getDarajaTimestamp();
       const password = Buffer.from(`${runtimeConfig.darajaShortcode}${runtimeConfig.darajaPasskey}${timestamp}`).toString('base64');
-      const transactionType = runtimeConfig.darajaShortcode === '174379' ? 'CustomerPayBillOnline' : 'CustomerBuyGoodsOnline';
+      
+      // Explicit Transaction Type from config
+      const transactionType = runtimeConfig.darajaType === 'Till' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline';
 
       const payload = {
         "BusinessShortCode": runtimeConfig.darajaShortcode,
@@ -107,11 +115,11 @@ async function triggerSTKPush(phoneNumber, amount) {
         "PartyB": runtimeConfig.darajaShortcode,
         "PhoneNumber": formattedPhone,
         "CallBackURL": callbackUrl,
-        "AccountReference": "ENA_COACH_TICKET",
+        "AccountReference": runtimeConfig.darajaAccountRef,
         "TransactionDesc": "Bus Booking Payment"
       };
 
-      const response = await fetch('https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest', {
+      const response = await fetch(`${getDarajaBaseUrl()}/mpesa/stkpush/v1/processrequest`, {
         method: 'POST', 
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -143,7 +151,7 @@ async function queryDarajaStatus(checkoutRequestId) {
     const password = Buffer.from(`${runtimeConfig.darajaShortcode}${runtimeConfig.darajaPasskey}${timestamp}`).toString('base64');
     
     try {
-        const response = await fetch('https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query', {
+        const response = await fetch(`${getDarajaBaseUrl()}/mpesa/stkpushquery/v1/query`, {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -165,100 +173,70 @@ async function queryDarajaStatus(checkoutRequestId) {
                 paymentStore.set(checkoutRequestId, { ...local, status: 'FAILED' });
                 return { status: 'FAILED', message: data.ResultDesc, raw: data };
             }
-            return { status: 'PENDING', message: data.ResultDesc || "User has not entered PIN yet.", raw: data };
+            return { status: 'PENDING', message: data.ResultDesc || "Waiting for PIN entry.", raw: data };
         }
-        return { status: 'UNKNOWN', message: data.errorMessage || "Request processing on Safaricom side.", raw: data };
+        return { status: 'UNKNOWN', message: data.errorMessage || "Query failed.", raw: data };
     } catch (e) {
         return { status: 'UNKNOWN', error: 'FETCH_ERROR', message: e.message };
     }
 }
 
-// --- WhatsApp Message Dispatcher ---
+// --- WhatsApp & Agent Helpers ---
 
 async function sendWhatsAppMessage(remoteJid, text, instanceOverride = null) {
     const activeInstance = instanceOverride || runtimeConfig.instanceName;
     const apiUrl = runtimeConfig.evolutionUrl;
     const apiToken = runtimeConfig.evolutionToken;
-
     const cleanNumber = remoteJid ? remoteJid.replace(/@s\.whatsapp\.net|@lid/g, '') : '';
-    const logEntry = { to: cleanNumber, text, timestamp: Date.now(), instance: activeInstance, status: 'pending' };
-    debugOutbox.push(logEntry);
-    if (debugOutbox.length > 50) debugOutbox.shift();
 
-    if (!apiUrl || !apiToken) {
-        logEntry.status = `FAILED: MISSING_CONFIG`;
-        return;
-    }
+    if (!apiUrl || !apiToken) return;
 
     try {
-        const response = await fetch(`${apiUrl}/message/sendText/${activeInstance}`, {
+        await fetch(`${apiUrl}/message/sendText/${activeInstance}`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': apiToken },
             body: JSON.stringify({ number: cleanNumber, text: text })
         });
-        if (!response.ok) {
-            logEntry.status = `failed: ${response.status}`;
-            logEntry.error = await response.text();
-        } else {
-            logEntry.status = 'sent';
-        }
-    } catch(e) { 
-        logEntry.status = 'error: network';
-        logEntry.error = e.message;
-    }
+    } catch(e) { console.error("WhatsApp Send Error:", e.message); }
 }
-
-// --- Agent Initialization ---
 
 let agentExecutorPromise = null;
 async function getAgentExecutor() {
     if (agentExecutorPromise) return agentExecutorPromise;
     agentExecutorPromise = (async () => {
-        if (!runtimeConfig.apiKey) throw new Error("GEMINI_API_KEY Missing.");
-        
         const tools = [
             new DynamicStructuredTool({
                 name: "searchRoutes",
-                description: "Find available buses between towns.",
+                description: "Find bus routes.",
                 schema: z.object({ origin: z.string(), destination: z.string() }),
-                func: async ({ origin, destination }) => "Available Routes: Nairobi to Kisumu (KES 1500), Nairobi to Mombasa (KES 1500)."
+                func: async () => "Available Routes: Nairobi to Kisumu (KES 1500), Nairobi to Mombasa (KES 1500)."
             }),
             new DynamicStructuredTool({
                 name: "initiatePayment",
-                description: "Sends an M-Pesa STK push to the user's phone. Returns a checkoutRequestId used for verification.",
+                description: "Initiate M-Pesa STK push. Returns checkoutRequestId.",
                 schema: z.object({ phoneNumber: z.string(), amount: z.number() }),
                 func: async ({ phoneNumber, amount }) => JSON.stringify(await triggerSTKPush(phoneNumber, amount))
             }),
             new DynamicStructuredTool({
                 name: "verifyPayment",
-                description: "Checks if the M-Pesa transaction is completed. Call this with checkoutRequestId when the user says they have paid.",
+                description: "Verify payment status.",
                 schema: z.object({ checkoutRequestId: z.string() }),
                 func: async ({ checkoutRequestId }) => JSON.stringify(await queryDarajaStatus(checkoutRequestId))
             }),
             new DynamicStructuredTool({
                 name: "bookTicket",
-                description: "Finalizes booking and generates a ticket. ONLY call after verifyPayment confirms status is COMPLETED.",
-                schema: z.object({ passengerName: z.string(), routeId: z.string(), phoneNumber: z.string(), travelDate: z.string(), checkoutRequestId: z.string() }),
-                func: async ({ passengerName, routeId, travelDate, checkoutRequestId }) => {
+                description: "Finalizes booking.",
+                schema: z.object({ passengerName: z.string(), checkoutRequestId: z.string() }),
+                func: async ({ passengerName, checkoutRequestId }) => {
                     const statusCheck = await queryDarajaStatus(checkoutRequestId);
-                    if (statusCheck.status !== 'COMPLETED') return JSON.stringify({ error: "Payment not verified yet." });
-                    const tId = `TKT-${Math.floor(Math.random()*100000)}`;
-                    return JSON.stringify({ status: 'success', ticketId: tId });
+                    if (statusCheck.status !== 'COMPLETED') return JSON.stringify({ error: "Unpaid" });
+                    return JSON.stringify({ status: 'success', ticketId: `TKT-${Math.floor(Math.random()*100000)}` });
                 }
             })
         ];
 
         const llm = new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash", apiKey: runtimeConfig.apiKey, temperature: 0.1 });
         const prompt = ChatPromptTemplate.fromMessages([
-            ["system", `You are Martha from Ena Coach. 
-            BOOKING STEPS:
-            1. Help user find a route.
-            2. Get travel date and name.
-            3. Call 'initiatePayment'. Tell user: "I've sent a prompt to your phone. Please enter your PIN."
-            4. Capture the checkoutRequestId from the response.
-            5. Wait for user to say "done", "paid", or "sent".
-            6. Call 'verifyPayment' with the checkoutRequestId.
-            7. If status is COMPLETED, call 'bookTicket'. 
-            ASK ONLY ONE QUESTION AT A TIME. Be polite.`],
+            ["system", `You are Martha from Ena Coach. 1. Find route. 2. initiatePayment. 3. verifyPayment. 4. bookTicket. Ask one question at a time.`],
             new MessagesPlaceholder("chat_history"),
             ["human", "{input}"],
             new MessagesPlaceholder("agent_scratchpad"),
@@ -279,10 +257,8 @@ app.post('/api/config/update', (req, res) => {
     res.json({ success: true, config: runtimeConfig });
 });
 
-// Explicit Daraja Endpoints for Frontend Dashboard
 app.post('/api/payment/initiate', async (req, res) => {
-    const { phoneNumber, amount } = req.body;
-    res.json(await triggerSTKPush(phoneNumber, amount));
+    res.json(await triggerSTKPush(req.body.phoneNumber, req.body.amount));
 });
 
 app.get('/api/payment/status/:id', async (req, res) => {
@@ -294,7 +270,6 @@ app.post('/webhook', async (req, res) => {
     if (type !== 'messages.upsert' || !data?.message || data?.key?.fromMe) return res.sendStatus(200);
     const text = data.message.conversation || data.message.extendedTextMessage?.text;
     if (!text) return res.sendStatus(200);
-
     webhookLogs.unshift({ sender: data.key.remoteJid, content: text, timestamp: new Date().toISOString() });
     
     (async () => {
@@ -307,10 +282,7 @@ app.post('/webhook', async (req, res) => {
            if (history.length > 10) history = history.slice(-10);
            userSessions.set(jid, history);
            await sendWhatsAppMessage(jid, result.output, instance);
-        } catch(e) { 
-           console.error("Agent Error:", e.message);
-           await sendWhatsAppMessage(data.key.remoteJid, "Sorry, I'm having trouble processing your request. Please try again in a moment.", instance);
-        }
+        } catch(e) { console.error("Agent Error:", e.message); }
     })();
     res.sendStatus(200);
 });
@@ -321,22 +293,14 @@ app.post('/callback/mpesa', (req, res) => {
         const { CheckoutRequestID, ResultCode, ResultDesc } = Body.stkCallback;
         const current = paymentStore.get(CheckoutRequestID);
         if(current) {
-            paymentStore.set(CheckoutRequestID, { 
-                ...current, 
-                status: ResultCode === 0 ? 'COMPLETED' : 'FAILED', 
-                resultDesc: ResultDesc 
-            });
-            console.log(`[M-Pesa Callback] Result for ${CheckoutRequestID}: ${ResultDesc}`);
+            paymentStore.set(CheckoutRequestID, { ...current, status: ResultCode === 0 ? 'COMPLETED' : 'FAILED', resultDesc: ResultDesc });
         }
     }
     res.sendStatus(200);
 });
 
-app.get('/api/debug/messages', (req, res) => res.json(debugOutbox));
 app.get('/api/debug/webhook-logs', (req, res) => res.json(webhookLogs));
-app.post('/api/debug/clear', (req, res) => { debugOutbox.length = 0; res.sendStatus(200); });
-
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach AI Server active on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach Server active on port ${PORT} [Env: ${runtimeConfig.darajaEnv}]`));
