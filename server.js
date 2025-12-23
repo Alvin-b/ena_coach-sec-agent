@@ -25,19 +25,19 @@ const PORT = process.env.PORT || 10000;
 // --- Multi-Service Runtime Configuration ---
 const runtimeConfig = {
     // AI
-    apiKey: process.env.GEMINI_API_KEY || process.env.API_KEY || '',
+    apiKey: (process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim(),
     // WhatsApp
-    evolutionUrl: (process.env.EVOLUTION_API_URL || '').replace(/\/$/, ''),
-    evolutionToken: process.env.EVOLUTION_API_TOKEN || '',
-    instanceName: process.env.INSTANCE_NAME || 'EnaCoach',
+    evolutionUrl: (process.env.EVOLUTION_API_URL || '').replace(/\/$/, '').trim(),
+    evolutionToken: (process.env.EVOLUTION_API_TOKEN || '').trim(),
+    instanceName: (process.env.INSTANCE_NAME || 'EnaCoach').trim(),
     // M-Pesa (Daraja)
-    darajaEnv: process.env.DARAJA_ENV || 'sandbox', // 'sandbox' or 'production'
-    darajaType: process.env.DARAJA_TYPE || 'Paybill', // 'Paybill' or 'Till'
-    darajaKey: process.env.DARAJA_CONSUMER_KEY || '',
-    darajaSecret: process.env.DARAJA_CONSUMER_SECRET || '',
-    darajaPasskey: process.env.DARAJA_PASSKEY || '',
-    darajaShortcode: process.env.DARAJA_SHORTCODE || '',
-    darajaAccountRef: process.env.DARAJA_ACCOUNT_REF || 'ENA_COACH',
+    darajaEnv: (process.env.DARAJA_ENV || 'sandbox').trim(), // 'sandbox' or 'production'
+    darajaType: (process.env.DARAJA_TYPE || 'Paybill').trim(), // 'Paybill' or 'Till'
+    darajaKey: (process.env.DARAJA_CONSUMER_KEY || '').trim(),
+    darajaSecret: (process.env.DARAJA_CONSUMER_SECRET || '').trim(),
+    darajaPasskey: (process.env.DARAJA_PASSKEY || '').trim(),
+    darajaShortcode: (process.env.DARAJA_SHORTCODE || '').trim(),
+    darajaAccountRef: (process.env.DARAJA_ACCOUNT_REF || 'ENA_COACH').trim(),
 };
 
 // Dynamic URL helper to ensure environment changes apply immediately
@@ -71,16 +71,27 @@ function getDarajaTimestamp() {
 }
 
 async function getDarajaToken() {
-  const auth = Buffer.from(`${runtimeConfig.darajaKey}:${runtimeConfig.darajaSecret}`).toString('base64');
+  const key = runtimeConfig.darajaKey.trim();
+  const secret = runtimeConfig.darajaSecret.trim();
+
+  if (!key || !secret) {
+      return { error: "Missing Consumer Key or Secret." };
+  }
+
+  const auth = Buffer.from(`${key}:${secret}`).toString('base64');
   try {
     const response = await fetch(`${getDarajaBaseUrl()}/oauth/v1/generate?grant_type=client_credentials`, {
       headers: { 'Authorization': `Basic ${auth}` }
     });
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Auth Failed: ${response.status} ${errorText}`);
-    }
+    
     const data = await response.json();
+
+    if (!response.ok) {
+        // Safaricom usually returns { errorCode: "...", errorMessage: "..." }
+        const msg = data.errorMessage || data.message || `HTTP ${response.status}`;
+        throw new Error(msg);
+    }
+    
     return data.access_token;
   } catch (error) {
     console.error("[Daraja Auth] Error:", error.message);
@@ -95,27 +106,26 @@ async function triggerSTKPush(phoneNumber, amount) {
   try {
       const tokenResult = await getDarajaToken();
       if (typeof tokenResult === 'object' && tokenResult.error) {
-          return { success: false, error: "AUTH_ERROR", message: tokenResult.error };
+          return { success: false, error: "AUTH_ERROR", message: `Safaricom rejected credentials: ${tokenResult.error}` };
       }
       
       const token = tokenResult;
       const timestamp = getDarajaTimestamp();
-      const password = Buffer.from(`${runtimeConfig.darajaShortcode}${runtimeConfig.darajaPasskey}${timestamp}`).toString('base64');
+      const password = Buffer.from(`${runtimeConfig.darajaShortcode.trim()}${runtimeConfig.darajaPasskey.trim()}${timestamp}`).toString('base64');
       
-      // Explicit Transaction Type from config
       const transactionType = runtimeConfig.darajaType === 'Till' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline';
 
       const payload = {
-        "BusinessShortCode": runtimeConfig.darajaShortcode,
+        "BusinessShortCode": runtimeConfig.darajaShortcode.trim(),
         "Password": password,
         "Timestamp": timestamp,
         "TransactionType": transactionType,
         "Amount": Math.ceil(amount),
         "PartyA": formattedPhone,
-        "PartyB": runtimeConfig.darajaShortcode,
+        "PartyB": runtimeConfig.darajaShortcode.trim(),
         "PhoneNumber": formattedPhone,
         "CallBackURL": callbackUrl,
-        "AccountReference": runtimeConfig.darajaAccountRef,
+        "AccountReference": runtimeConfig.darajaAccountRef.trim() || "ENA_COACH",
         "TransactionDesc": "Bus Booking Payment"
       };
 
@@ -148,14 +158,14 @@ async function queryDarajaStatus(checkoutRequestId) {
     
     const token = tokenResult;
     const timestamp = getDarajaTimestamp();
-    const password = Buffer.from(`${runtimeConfig.darajaShortcode}${runtimeConfig.darajaPasskey}${timestamp}`).toString('base64');
+    const password = Buffer.from(`${runtimeConfig.darajaShortcode.trim()}${runtimeConfig.darajaPasskey.trim()}${timestamp}`).toString('base64');
     
     try {
         const response = await fetch(`${getDarajaBaseUrl()}/mpesa/stkpushquery/v1/query`, {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                "BusinessShortCode": runtimeConfig.darajaShortcode,
+                "BusinessShortCode": runtimeConfig.darajaShortcode.trim(),
                 "Password": password,
                 "Timestamp": timestamp,
                 "CheckoutRequestID": checkoutRequestId
@@ -252,7 +262,12 @@ async function getAgentExecutor() {
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 
 app.post('/api/config/update', (req, res) => {
-    Object.assign(runtimeConfig, req.body);
+    // Sanitize updates
+    const sanitized = {};
+    for (let key in req.body) {
+        sanitized[key] = typeof req.body[key] === 'string' ? req.body[key].trim() : req.body[key];
+    }
+    Object.assign(runtimeConfig, sanitized);
     if (req.body.apiKey || req.body.darajaKey) agentExecutorPromise = null;
     res.json({ success: true, config: runtimeConfig });
 });

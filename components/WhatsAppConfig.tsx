@@ -67,30 +67,34 @@ const WhatsAppConfig: React.FC = () => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
-                evolutionUrl: apiUrl, 
-                evolutionToken: apiToken, 
-                instanceName, 
-                apiKey: geminiKey,
+                evolutionUrl: apiUrl.trim(), 
+                evolutionToken: apiToken.trim(), 
+                instanceName: instanceName.trim(), 
+                apiKey: geminiKey.trim(),
                 darajaEnv,
                 darajaType,
-                darajaKey,
-                darajaSecret,
-                darajaPasskey,
-                darajaShortcode,
-                darajaAccountRef
+                darajaKey: darajaKey.trim(),
+                darajaSecret: darajaSecret.trim(),
+                darajaPasskey: darajaPasskey.trim(),
+                darajaShortcode: darajaShortcode.trim(),
+                darajaAccountRef: darajaAccountRef.trim()
             })
         });
         if (res.ok) {
-            addTerminalLog('✅ Credentials synchronized with server.', 'success');
+            addTerminalLog('✅ Credentials synchronized and trimmed.', 'success');
+            return true;
         }
     } catch (e: any) { addTerminalLog(`Sync Error: ${e.message}`, 'error'); }
+    return false;
   };
 
   const handleTestSTKPush = async () => {
       setIsTestingPayment(true);
       addTerminalLog(`Initiating STK Push (${darajaEnv.toUpperCase()})...`, 'info');
       try {
-          await handleSaveAndSync();
+          const synced = await handleSaveAndSync();
+          if (!synced) return;
+
           const res = await fetch('/api/payment/initiate', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -101,9 +105,11 @@ const WhatsAppConfig: React.FC = () => {
               setCurrentCheckoutId(data.checkoutRequestId);
               addTerminalLog(`STK Sent! ID: ${data.checkoutRequestId}`, 'success');
           } else {
-              addTerminalLog(`Error: ${data.message}`, 'error');
+              // Now shows the actual Safaricom reason (e.g., "Invalid Credentials", "Not Authorized")
+              addTerminalLog(`Safaricom Error: ${data.message}`, 'error');
+              if (data.error) addTerminalLog(`Type: ${data.error}`, 'error');
           }
-      } catch (e: any) { addTerminalLog(`Error: ${e.message}`, 'error'); }
+      } catch (e: any) { addTerminalLog(`Internal Error: ${e.message}`, 'error'); }
       finally { setIsTestingPayment(false); }
   };
 
@@ -183,15 +189,18 @@ const WhatsAppConfig: React.FC = () => {
                         <button onClick={handleTestSTKPush} disabled={isTestingPayment} className="flex-1 py-2 bg-gray-900 text-white text-[10px] font-bold rounded hover:bg-black transition">TEST STK</button>
                         <button onClick={handleCheckStatus} disabled={!currentCheckoutId} className="flex-1 py-2 border border-gray-300 text-[10px] font-bold rounded hover:bg-white transition">STATUS</button>
                     </div>
+                    <div className="mt-4 p-2 bg-white/50 rounded text-[9px] text-gray-600 italic">
+                        <b>Note:</b> Sandbox keys will NOT work in Live mode. Credentials are auto-trimmed to remove spaces.
+                    </div>
                 </div>
                 <div className="md:col-span-2 grid grid-cols-2 gap-4">
                     <div>
                         <label className="text-[10px] font-bold text-gray-400 uppercase">Consumer Key</label>
-                        <input type="text" value={darajaKey} onChange={e => setDarajaKey(e.target.value)} className="w-full border p-2 rounded text-xs font-mono" />
+                        <input type="text" value={darajaKey} onChange={e => setDarajaKey(e.target.value)} className="w-full border p-2 rounded text-xs font-mono" placeholder="Your Live Consumer Key" />
                     </div>
                     <div>
                         <label className="text-[10px] font-bold text-gray-400 uppercase">Consumer Secret</label>
-                        <input type="password" value={darajaSecret} onChange={e => setDarajaSecret(e.target.value)} className="w-full border p-2 rounded text-xs font-mono" />
+                        <input type="password" value={darajaSecret} onChange={e => setDarajaSecret(e.target.value)} className="w-full border p-2 rounded text-xs font-mono" placeholder="Your Live Consumer Secret" />
                     </div>
                     <div>
                         <label className="text-[10px] font-bold text-gray-400 uppercase">Payment Method</label>
@@ -209,12 +218,13 @@ const WhatsAppConfig: React.FC = () => {
                         <input type="text" value={darajaShortcode} onChange={e => setDarajaShortcode(e.target.value)} className="w-full border p-2 rounded text-xs font-bold" placeholder="e.g. 522522" />
                     </div>
                     <div>
-                        <label className="text-[10px] font-bold text-gray-400 uppercase">Account Ref (KCB Account)</label>
-                        <input type="text" value={darajaAccountRef} onChange={e => setDarajaAccountRef(e.target.value)} className="w-full border p-2 rounded text-xs font-bold" placeholder="Your Bank Acc No" />
+                        <label className="text-[10px] font-bold text-gray-400 uppercase">Account Ref {darajaType === 'Paybill' ? '(Bank Acc No)' : '(Till Name)'}</label>
+                        <input type="text" value={darajaAccountRef} onChange={e => setDarajaAccountRef(e.target.value)} className="w-full border p-2 rounded text-xs font-bold border-orange-200" placeholder={darajaType === 'Paybill' ? 'Your Bank Acc Number' : 'ENA_COACH'} />
+                        {darajaType === 'Paybill' && <p className="text-[8px] text-orange-600 mt-1">* KCB requires your bank account number here.</p>}
                     </div>
                     <div>
                         <label className="text-[10px] font-bold text-gray-400 uppercase">Passkey</label>
-                        <input type="password" value={darajaPasskey} onChange={e => setDarajaPasskey(e.target.value)} className="w-full border p-2 rounded text-xs font-mono" />
+                        <input type="password" value={darajaPasskey} onChange={e => setDarajaPasskey(e.target.value)} className="w-full border p-2 rounded text-xs font-mono" placeholder="Your Live Passkey" />
                     </div>
                 </div>
             </section>
