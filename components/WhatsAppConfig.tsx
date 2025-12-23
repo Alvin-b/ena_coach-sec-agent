@@ -88,7 +88,7 @@ const WhatsAppConfig: React.FC = () => {
         } else {
             addLog('❌ Sync failed.');
         }
-    } catch (e) { addLog(`Error syncing: ${e.message}`); }
+    } catch (e: any) { addLog(`Error syncing: ${e.message}`); }
   };
 
   const handleTestSTKPush = async () => {
@@ -116,7 +116,7 @@ const WhatsAppConfig: React.FC = () => {
               addTerminalLog(`Details: ${data.message}`, 'error');
               if (data.raw) addTerminalLog(`Raw Response: ${JSON.stringify(data.raw, null, 2)}`, 'error');
           }
-      } catch (e) {
+      } catch (e: any) {
           addTerminalLog(`API Error: ${e.message}`, 'error');
       } finally {
           setIsTestingPayment(false);
@@ -143,7 +143,7 @@ const WhatsAppConfig: React.FC = () => {
           if (data.raw) {
               addTerminalLog(`Raw Status: ${JSON.stringify(data.raw, null, 2)}`, 'info');
           }
-      } catch (e) {
+      } catch (e: any) {
           addTerminalLog(`Status Check Error: ${e.message}`, 'error');
       }
   };
@@ -169,7 +169,7 @@ const WhatsAppConfig: React.FC = () => {
               body: JSON.stringify(payload)
           });
           if (res.ok) addLog(`Simulated: "${simMessage}"`);
-      } catch (e) { addLog(`Simulator Error: ${e.message}`); }
+      } catch (e: any) { addLog(`Simulator Error: ${e.message}`); }
       finally { setSimLoading(false); }
   };
 
@@ -244,7 +244,7 @@ const WhatsAppConfig: React.FC = () => {
                                  log.type === 'error' ? 'text-red-400' : 
                                  log.type === 'success' ? 'text-green-400' : 'text-gray-300'
                              }`}>
-                                 <span className="text-gray-600 mr-2">></span>
+                                 <span className="text-gray-600 mr-2">&gt;</span>
                                  {log.msg}
                              </div>
                          ))
