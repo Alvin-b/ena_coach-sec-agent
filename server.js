@@ -79,55 +79,65 @@ async function getDarajaToken() {
   }
 
   const auth = Buffer.from(`${key}:${secret}`).toString('base64');
+  const tokenUrl = `${getDarajaBaseUrl()}/oauth/v1/generate?grant_type=client_credentials`;
+  
   try {
-    const response = await fetch(`${getDarajaBaseUrl()}/oauth/v1/generate?grant_type=client_credentials`, {
+    console.log(`[Daraja Token] Auth request to: ${tokenUrl}`);
+    const response = await fetch(tokenUrl, {
       headers: { 'Authorization': `Basic ${auth}` }
     });
     
     const data = await response.json();
 
     if (!response.ok) {
-        // Safaricom usually returns { errorCode: "...", errorMessage: "..." }
-        const msg = data.errorMessage || data.message || `HTTP ${response.status}`;
-        throw new Error(msg);
+        // If 400 error, Safaricom sometimes doesn't send JSON
+        const errorMsg = data.errorMessage || data.message || `HTTP ${response.status} - Likely invalid credentials for ${runtimeConfig.darajaEnv}`;
+        return { error: errorMsg, status: response.status };
     }
     
     return data.access_token;
   } catch (error) {
-    console.error("[Daraja Auth] Error:", error.message);
+    console.error("[Daraja Auth] Exception:", error.message);
     return { error: error.message };
   }
 }
 
 async function triggerSTKPush(phoneNumber, amount) {
   let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
+  if (formattedPhone.length === 9) formattedPhone = '254' + formattedPhone;
+  
   const callbackUrl = `${SERVER_URL.replace(/\/$/, '')}/callback/mpesa`;
 
   try {
       const tokenResult = await getDarajaToken();
       if (typeof tokenResult === 'object' && tokenResult.error) {
-          return { success: false, error: "AUTH_ERROR", message: `Safaricom rejected credentials: ${tokenResult.error}` };
+          return { success: false, error: "AUTH_ERROR", message: tokenResult.error };
       }
       
       const token = tokenResult;
       const timestamp = getDarajaTimestamp();
-      const password = Buffer.from(`${runtimeConfig.darajaShortcode.trim()}${runtimeConfig.darajaPasskey.trim()}${timestamp}`).toString('base64');
+      const shortcode = runtimeConfig.darajaShortcode.trim();
+      const passkey = runtimeConfig.darajaPasskey.trim();
+      
+      const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
       
       const transactionType = runtimeConfig.darajaType === 'Till' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline';
 
       const payload = {
-        "BusinessShortCode": runtimeConfig.darajaShortcode.trim(),
+        "BusinessShortCode": shortcode,
         "Password": password,
         "Timestamp": timestamp,
         "TransactionType": transactionType,
         "Amount": Math.ceil(amount),
         "PartyA": formattedPhone,
-        "PartyB": runtimeConfig.darajaShortcode.trim(),
+        "PartyB": shortcode,
         "PhoneNumber": formattedPhone,
         "CallBackURL": callbackUrl,
         "AccountReference": runtimeConfig.darajaAccountRef.trim() || "ENA_COACH",
         "TransactionDesc": "Bus Booking Payment"
       };
+
+      console.log(`[Daraja STK] ProcessRequest URL: ${getDarajaBaseUrl()}/mpesa/stkpush/v1/processrequest`);
 
       const response = await fetch(`${getDarajaBaseUrl()}/mpesa/stkpush/v1/processrequest`, {
         method: 'POST', 
@@ -158,14 +168,16 @@ async function queryDarajaStatus(checkoutRequestId) {
     
     const token = tokenResult;
     const timestamp = getDarajaTimestamp();
-    const password = Buffer.from(`${runtimeConfig.darajaShortcode.trim()}${runtimeConfig.darajaPasskey.trim()}${timestamp}`).toString('base64');
+    const shortcode = runtimeConfig.darajaShortcode.trim();
+    const passkey = runtimeConfig.darajaPasskey.trim();
+    const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
     
     try {
         const response = await fetch(`${getDarajaBaseUrl()}/mpesa/stkpushquery/v1/query`, {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                "BusinessShortCode": runtimeConfig.darajaShortcode.trim(),
+                "BusinessShortCode": shortcode,
                 "Password": password,
                 "Timestamp": timestamp,
                 "CheckoutRequestID": checkoutRequestId
@@ -191,78 +203,11 @@ async function queryDarajaStatus(checkoutRequestId) {
     }
 }
 
-// --- WhatsApp & Agent Helpers ---
-
-async function sendWhatsAppMessage(remoteJid, text, instanceOverride = null) {
-    const activeInstance = instanceOverride || runtimeConfig.instanceName;
-    const apiUrl = runtimeConfig.evolutionUrl;
-    const apiToken = runtimeConfig.evolutionToken;
-    const cleanNumber = remoteJid ? remoteJid.replace(/@s\.whatsapp\.net|@lid/g, '') : '';
-
-    if (!apiUrl || !apiToken) return;
-
-    try {
-        await fetch(`${apiUrl}/message/sendText/${activeInstance}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': apiToken },
-            body: JSON.stringify({ number: cleanNumber, text: text })
-        });
-    } catch(e) { console.error("WhatsApp Send Error:", e.message); }
-}
-
-let agentExecutorPromise = null;
-async function getAgentExecutor() {
-    if (agentExecutorPromise) return agentExecutorPromise;
-    agentExecutorPromise = (async () => {
-        const tools = [
-            new DynamicStructuredTool({
-                name: "searchRoutes",
-                description: "Find bus routes.",
-                schema: z.object({ origin: z.string(), destination: z.string() }),
-                func: async () => "Available Routes: Nairobi to Kisumu (KES 1500), Nairobi to Mombasa (KES 1500)."
-            }),
-            new DynamicStructuredTool({
-                name: "initiatePayment",
-                description: "Initiate M-Pesa STK push. Returns checkoutRequestId.",
-                schema: z.object({ phoneNumber: z.string(), amount: z.number() }),
-                func: async ({ phoneNumber, amount }) => JSON.stringify(await triggerSTKPush(phoneNumber, amount))
-            }),
-            new DynamicStructuredTool({
-                name: "verifyPayment",
-                description: "Verify payment status.",
-                schema: z.object({ checkoutRequestId: z.string() }),
-                func: async ({ checkoutRequestId }) => JSON.stringify(await queryDarajaStatus(checkoutRequestId))
-            }),
-            new DynamicStructuredTool({
-                name: "bookTicket",
-                description: "Finalizes booking.",
-                schema: z.object({ passengerName: z.string(), checkoutRequestId: z.string() }),
-                func: async ({ passengerName, checkoutRequestId }) => {
-                    const statusCheck = await queryDarajaStatus(checkoutRequestId);
-                    if (statusCheck.status !== 'COMPLETED') return JSON.stringify({ error: "Unpaid" });
-                    return JSON.stringify({ status: 'success', ticketId: `TKT-${Math.floor(Math.random()*100000)}` });
-                }
-            })
-        ];
-
-        const llm = new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash", apiKey: runtimeConfig.apiKey, temperature: 0.1 });
-        const prompt = ChatPromptTemplate.fromMessages([
-            ["system", `You are Martha from Ena Coach. 1. Find route. 2. initiatePayment. 3. verifyPayment. 4. bookTicket. Ask one question at a time.`],
-            new MessagesPlaceholder("chat_history"),
-            ["human", "{input}"],
-            new MessagesPlaceholder("agent_scratchpad"),
-        ]);
-        const agent = await createToolCallingAgent({ llm: llm.bindTools(tools), tools, prompt });
-        return new AgentExecutor({ agent, tools });
-    })();
-    return agentExecutorPromise;
-}
-
 // --- API Endpoints ---
 
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 
 app.post('/api/config/update', (req, res) => {
-    // Sanitize updates
     const sanitized = {};
     for (let key in req.body) {
         sanitized[key] = typeof req.body[key] === 'string' ? req.body[key].trim() : req.body[key];
@@ -270,6 +215,16 @@ app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, sanitized);
     if (req.body.apiKey || req.body.darajaKey) agentExecutorPromise = null;
     res.json({ success: true, config: runtimeConfig });
+});
+
+// TEST AUTH specifically to troubleshoot 400 errors
+app.get('/api/daraja/test-auth', async (req, res) => {
+    const result = await getDarajaToken();
+    if (typeof result === 'string') {
+        res.json({ success: true, message: "Authentication Successful. Token received." });
+    } else {
+        res.status(400).json({ success: false, ...result });
+    }
 });
 
 app.post('/api/payment/initiate', async (req, res) => {
@@ -314,8 +269,69 @@ app.post('/callback/mpesa', (req, res) => {
     res.sendStatus(200);
 });
 
+async function sendWhatsAppMessage(remoteJid, text, instanceOverride = null) {
+    const activeInstance = instanceOverride || runtimeConfig.instanceName;
+    const apiUrl = runtimeConfig.evolutionUrl;
+    const apiToken = runtimeConfig.evolutionToken;
+    const cleanNumber = remoteJid ? remoteJid.replace(/@s\.whatsapp\.net|@lid/g, '') : '';
+    if (!apiUrl || !apiToken) return;
+    try {
+        await fetch(`${apiUrl}/message/sendText/${activeInstance}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': apiToken },
+            body: JSON.stringify({ number: cleanNumber, text: text })
+        });
+    } catch(e) { console.error("WhatsApp Send Error:", e.message); }
+}
+
+let agentExecutorPromise = null;
+async function getAgentExecutor() {
+    if (agentExecutorPromise) return agentExecutorPromise;
+    agentExecutorPromise = (async () => {
+        const tools = [
+            new DynamicStructuredTool({
+                name: "searchRoutes",
+                description: "Find bus routes.",
+                schema: z.object({ origin: z.string(), destination: z.string() }),
+                func: async () => "Available Routes: Nairobi to Kisumu (KES 1500), Nairobi to Mombasa (KES 1500)."
+            }),
+            new DynamicStructuredTool({
+                name: "initiatePayment",
+                description: "Initiate M-Pesa STK push. Returns checkoutRequestId.",
+                schema: z.object({ phoneNumber: z.string(), amount: z.number() }),
+                func: async ({ phoneNumber, amount }) => JSON.stringify(await triggerSTKPush(phoneNumber, amount))
+            }),
+            new DynamicStructuredTool({
+                name: "verifyPayment",
+                description: "Verify payment status.",
+                schema: z.object({ checkoutRequestId: z.string() }),
+                func: async ({ checkoutRequestId }) => JSON.stringify(await queryDarajaStatus(checkoutRequestId))
+            }),
+            new DynamicStructuredTool({
+                name: "bookTicket",
+                description: "Finalizes booking.",
+                schema: z.object({ passengerName: z.string(), checkoutRequestId: z.string() }),
+                func: async ({ passengerName, checkoutRequestId }) => {
+                    const statusCheck = await queryDarajaStatus(checkoutRequestId);
+                    if (statusCheck.status !== 'COMPLETED') return JSON.stringify({ error: "Unpaid" });
+                    return JSON.stringify({ status: 'success', ticketId: `TKT-${Math.floor(Math.random()*100000)}` });
+                }
+            })
+        ];
+        const llm = new ChatGoogleGenerativeAI({ model: "gemini-3-flash-preview", apiKey: runtimeConfig.apiKey, temperature: 0.1 });
+        const prompt = ChatPromptTemplate.fromMessages([
+            ["system", `You are Martha from Ena Coach. 1. Find route. 2. initiatePayment. 3. verifyPayment. 4. bookTicket. Ask one question at a time.`],
+            new MessagesPlaceholder("chat_history"),
+            ["human", "{input}"],
+            new MessagesPlaceholder("agent_scratchpad"),
+        ]);
+        const agent = await createToolCallingAgent({ llm: llm.bindTools(tools), tools, prompt });
+        return new AgentExecutor({ agent, tools });
+    })();
+    return agentExecutorPromise;
+}
+
 app.get('/api/debug/webhook-logs', (req, res) => res.json(webhookLogs));
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach Server active on port ${PORT} [Env: ${runtimeConfig.darajaEnv}]`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach Server active on port ${PORT} [Mode: ${runtimeConfig.darajaEnv}]`));
