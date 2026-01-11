@@ -8,15 +8,6 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import crypto from 'crypto'; 
-
-// LangChain Imports
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { AgentExecutor, createToolCallingAgent } from "langchain/agents";
-import { DynamicStructuredTool } from "@langchain/core/tools";
-import { z } from "zod";
-import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
-import { HumanMessage, AIMessage } from "@langchain/core/messages";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,22 +20,22 @@ const runtimeConfig = {
     evolutionToken: (process.env.EVOLUTION_API_TOKEN || '').trim(),
     instanceName: (process.env.INSTANCE_NAME || 'EnaCoach').trim(),
     
-    // M-Pesa (Daraja) - HARDCODED PRODUCTION CREDENTIALS
+    // M-Pesa (Daraja) - PRODUCTION CREDENTIALS
     darajaEnv: 'production', 
     darajaType: 'Till', 
     darajaKey: 'vz2udWubzGyYSTzkEWGo7wM6MTP2aK8uc6GnoPHAMuxgTB6J',
     darajaSecret: 'bW5AKfCRXIqQ1DyAMriKVAKkUULaQl8FLdPA8SadMqiylrwQPZR8tJAAS0mVG1rm',
-    darajaPasskey: '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f',
-    darajaShortcode: '5512238', 
+    darajaPasskey: '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f', // NOTE: Ensure this is your PRODUCTION passkey
+    darajaShortcode: '5512238', // Store Number
+    darajaStoreNumber: '5512238', // Till Number
     darajaAccountRef: 'ENA_COACH',
-    darajaSecurityCredential: 'JhYtB62wiNMf/XrJ0mWOBVMgaVLCIiCQsuAGJ2P38wCrfn9CFtk/ZUAF/0h8ILI5fCy/CjJg4aixLigtOF0cR7bFmSspQclARTu6eEkAm3wQixPr/f8LRq4T6ql7cSEZX7A8097LUdrOGGFCDWeGmAJTxngp26AXl6quKqQYP35QvznzVqpuz0WYMdZgo0Kb++yr5znv6AFjigrCr0MT/SzsEXti0Gy2VSYYJduDrp9vMZ6SwoFLoxXA+WciE3cuSsuYpUUJoXU9MBYW0PB5H0JQzyyGeWwngGd+YTQf0iTa7LrsTB0aCaedoBOfFT43pjC/Y2L55LaedlqsKeix4A==',
-    darajaInitiatorPassword: 'menopasscode'
+    darajaCallbackUrl: 'https://ena-coach-bot.onrender.com/callback/mpesa',
+    darajaSecurityCredential: '',
+    darajaInitiatorPassword: ''
 };
 
-// Global Memory Stores
-const paymentStore = new Map(); 
 const systemLogs = []; 
-let lastCriticalError = null; // Store for the frontend prompt
+let lastCriticalError = null;
 
 function addSystemLog(msg, type = 'info') {
     const log = { msg, type, timestamp: new Date().toISOString() };
@@ -93,91 +84,127 @@ async function triggerSTKPush(phoneNumber, amount) {
   let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
   if (formattedPhone.startsWith('7') || formattedPhone.startsWith('1')) formattedPhone = '254' + formattedPhone;
   
-  addSystemLog(`Initiating STK Push to ${formattedPhone}...`, 'info');
+  addSystemLog(`Pushing KES ${amount} to ${formattedPhone} (Mode: ${runtimeConfig.darajaType})...`, 'info');
 
   try {
       const tokenResult = await getDarajaToken();
       if (typeof tokenResult === 'object' && tokenResult.error) {
-          const errMsg = `Authentication Error: ${tokenResult.error}. Please check your Consumer Key/Secret.`;
-          addSystemLog(errMsg, 'error');
-          return { success: false, error: "AUTH_ERROR", message: errMsg };
+          addSystemLog(`Auth Failed: ${tokenResult.error}`, 'error');
+          return { success: false, error: "AUTH_ERROR", message: tokenResult.error };
       }
       
-      const token = tokenResult;
       const timestamp = getDarajaTimestamp();
-      const shortcode = runtimeConfig.darajaShortcode.trim();
+      const shortcode = runtimeConfig.darajaShortcode.trim(); // Store Number
+      const storeNumber = runtimeConfig.darajaStoreNumber.trim() || shortcode; // Till Number
       const passkey = runtimeConfig.darajaPasskey.trim();
       const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
       
-      // CRITICAL: For Buy Goods Tills, PartyB is usually the Store Number (Shortcode)
+      const transactionType = runtimeConfig.darajaType === 'Till' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline';
+
       const payload = {
         "BusinessShortCode": shortcode,
         "Password": password,
         "Timestamp": timestamp,
-        "TransactionType": "CustomerBuyGoodsOnline",
+        "TransactionType": transactionType,
         "Amount": Math.ceil(amount),
         "PartyA": formattedPhone,
-        "PartyB": shortcode,
+        "PartyB": storeNumber,
         "PhoneNumber": formattedPhone,
-        "CallBackURL": "https://ena-coach-bot.onrender.com/callback/mpesa",
-        "AccountReference": runtimeConfig.darajaAccountRef,
-        "TransactionDesc": "Bus Ticket"
+        "CallBackURL": runtimeConfig.darajaCallbackUrl.trim(),
+        "AccountReference": runtimeConfig.darajaAccountRef.trim().replace(/\s/g, '').substring(0, 12),
+        "TransactionDesc": "BusBooking"
       };
 
       const response = await fetch(`${getDarajaBaseUrl()}/mpesa/stkpush/v1/processrequest`, {
         method: 'POST', 
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { 'Authorization': `Bearer ${tokenResult}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       
       const data = await response.json();
 
       if (data.ResponseCode === "0") {
-          addSystemLog(`STK Push Request Sent Successfully! ID: ${data.CheckoutRequestID}`, 'success');
-          paymentStore.set(data.CheckoutRequestID, { status: 'PENDING', phone: formattedPhone, amount });
-          return { success: true, checkoutRequestId: data.CheckoutRequestID };
+          addSystemLog(`Safaricom Accepted: ${data.ResponseDescription}. RequestID: ${data.CheckoutRequestID}`, 'success');
+          return { success: true, checkoutRequestId: data.CheckoutRequestID, description: data.ResponseDescription };
       }
       
-      const failMsg = `Safaricom Rejected Initiation: ${data.CustomerMessage || data.errorMessage || "API Error"}`;
+      const failMsg = `M-Pesa Rejected [${data.ResponseCode}]: ${data.CustomerMessage || data.errorMessage || data.ResponseDescription}`;
       addSystemLog(failMsg, 'error');
-      return { success: false, error: "SAFARICOM_REJECTION", message: failMsg };
+      return { success: false, error: "REJECTION", message: failMsg };
   } catch (error) {
-      const sysMsg = `System Error: Could not connect to Safaricom API. ${error.message}`;
-      addSystemLog(sysMsg, 'error');
-      return { success: false, error: "SYSTEM_ERROR", message: sysMsg };
+      addSystemLog(`API Connection Error: ${error.message}`, 'error');
+      return { success: false, error: "SYSTEM_ERROR", message: error.message };
   }
+}
+
+async function queryDarajaStatus(id) {
+    const tokenResult = await getDarajaToken();
+    if (typeof tokenResult === 'object') return { status: 'ERROR', message: tokenResult.error };
+    
+    try {
+        const timestamp = getDarajaTimestamp();
+        const shortcode = runtimeConfig.darajaShortcode.trim();
+        const passkey = runtimeConfig.darajaPasskey.trim();
+        const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
+
+        const response = await fetch(`${getDarajaBaseUrl()}/mpesa/stkpushquery/v1/query`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${tokenResult}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                "BusinessShortCode": shortcode,
+                "Password": password,
+                "Timestamp": timestamp,
+                "CheckoutRequestID": id
+            })
+        });
+        const data = await response.json();
+        if (data.ResponseCode === "0") {
+            if (data.ResultCode === "0") return { status: 'COMPLETED', message: "Payment Verified" };
+            return { status: 'FAILED', message: data.ResultDesc };
+        }
+        return { status: 'PENDING', message: data.ResponseDescription || "Awaiting PIN" };
+    } catch (e) { return { status: 'ERROR', message: e.message }; }
 }
 
 // --- API ---
 
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 app.get('/api/debug/system-logs', (req, res) => res.json(systemLogs));
+
 app.get('/api/debug/latest-error', (req, res) => {
-    const err = lastCriticalError;
-    lastCriticalError = null; // Reset once polled
-    res.json(err);
+    if (!lastCriticalError) return res.status(200).json({ msg: null });
+    const err = { ...lastCriticalError };
+    lastCriticalError = null; 
+    res.status(200).json(err);
 });
 
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog(`Config updated via dashboard.`, 'info');
-    res.json({ success: true });
+    addSystemLog(`Configuration Saved.`, 'info');
+    res.status(200).json({ success: true });
 });
 
 app.post('/api/payment/initiate', async (req, res) => {
     const result = await triggerSTKPush(req.body.phoneNumber, req.body.amount);
-    res.json(result);
+    res.status(200).json(result);
 });
 
-// LangChain/Agent Logic (Placeholder for full agent)
-app.post('/webhook', (req, res) => {
-    // Logic for incoming WhatsApp messages handled here
+app.get('/api/payment/status/:id', async (req, res) => {
+    const result = await queryDarajaStatus(req.params.id);
+    res.status(200).json(result);
+});
+
+app.post('/callback/mpesa', (req, res) => {
+    const { Body } = req.body;
+    if (Body?.stkCallback) {
+        const { CheckoutRequestID, ResultCode, ResultDesc } = Body.stkCallback;
+        if(ResultCode === 0) addSystemLog(`SUCCESS: Payment Confirmed for ${CheckoutRequestID}`, 'success');
+        else addSystemLog(`CANCELLED: Payment Failed for ${CheckoutRequestID} (${ResultDesc})`, 'error');
+    }
     res.sendStatus(200);
 });
 
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on port ${PORT}. Production Till ${runtimeConfig.darajaShortcode} Active.`);
-});
+app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach AI server running on port ${PORT}`));
