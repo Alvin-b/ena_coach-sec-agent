@@ -49,7 +49,7 @@ const WhatsAppConfig: React.FC = () => {
               }
           }
       } catch (e) {
-          console.debug("Polling paused during update.");
+          console.debug("Polling paused.");
       }
   };
 
@@ -120,7 +120,7 @@ const WhatsAppConfig: React.FC = () => {
               setCurrentAlert({ msg: data.message, timestamp: Date.now() });
           }
       } catch (e) {
-          setCurrentAlert({ msg: "Connection lost. Please refresh the page.", timestamp: Date.now() });
+          setCurrentAlert({ msg: "Connection to server lost.", timestamp: Date.now() });
       } finally {
           setIsTestingPayment(false);
           fetchLogsAndAlerts();
@@ -133,48 +133,46 @@ const WhatsAppConfig: React.FC = () => {
       try {
           const res = await fetch(`/api/payment/status/${lastCheckoutId}`);
           const data = await res.json();
-          alert(`M-Pesa Response:\nStatus: ${data.status}\nMessage: ${data.message}`);
-      } catch (e) {
-          alert("Failed to query Safaricom status.");
-      } finally { setIsCheckingStatus(false); }
+          alert(`Status: ${data.status}\nMessage: ${data.message}`);
+          fetchLogsAndAlerts();
+      } catch (e) {}
+      finally { setIsCheckingStatus(false); }
   };
 
-  // Check if sandbox passkey is used with production shortcode
-  const isUsingSandboxPasskey = darajaPasskey === '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f';
+  const isSandboxPasskey = darajaPasskey === '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f';
 
   return (
     <div className="space-y-8 pb-20 relative">
       
-      {/* Failure Alert Prompt */}
+      {/* Transaction Alert Prompt */}
       {currentAlert && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black bg-opacity-70 backdrop-blur-sm p-4 animate-fade-in">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border-4 border-red-500 transform transition-all scale-100">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-fade-in">
+              <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md overflow-hidden border-4 border-red-500">
                   <div className="bg-red-500 p-8 text-white text-center">
-                      <i className="fas fa-exclamation-circle text-6xl mb-4"></i>
-                      <h2 className="text-2xl font-black uppercase tracking-widest">Transaction Failed</h2>
+                      <i className="fas fa-exclamation-triangle text-7xl mb-4"></i>
+                      <h2 className="text-2xl font-black uppercase tracking-widest">STK FAILED</h2>
                   </div>
                   <div className="p-8">
                       <div className="bg-red-50 p-6 rounded-2xl border border-red-100 mb-6">
                         <p className="text-red-900 font-bold text-center text-sm leading-relaxed">
-                            {currentAlert.msg || "Safaricom rejected the request. Please check your credentials."}
+                            {currentAlert.msg}
                         </p>
                       </div>
                       
-                      {isUsingSandboxPasskey && (
+                      {isSandboxPasskey && (
                         <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-xl">
-                            <p className="text-yellow-800 text-xs font-bold flex items-center">
-                                <i className="fas fa-exclamation-triangle mr-2"></i>
-                                Sandbox Passkey Detected
+                            <p className="text-yellow-800 text-[10px] font-bold uppercase">
+                                <i className="fas fa-exclamation-triangle mr-1"></i> Sandbox Passkey Detected
                             </p>
-                            <p className="text-yellow-700 text-[10px] mt-1">
-                                You are using the standard sandbox passkey with a production shortcode. This will always fail. Please enter your Production Passkey.
+                            <p className="text-yellow-700 text-[10px] mt-1 leading-tight">
+                                You are using the standard sandbox passkey. For a Production Till (5512238), you <b>must</b> enter the Production Passkey Safaricom emailed to you.
                             </p>
                         </div>
                       )}
 
                       <button 
                         onClick={() => setCurrentAlert(null)}
-                        className="w-full py-5 bg-gray-900 text-white font-black rounded-2xl hover:bg-black transition uppercase tracking-widest text-xs shadow-lg active:scale-95"
+                        className="w-full py-5 bg-red-600 text-white font-black rounded-2xl hover:bg-red-700 transition shadow-lg active:scale-95 uppercase tracking-widest text-xs"
                       >
                         Dismiss Alert
                       </button>
@@ -184,25 +182,25 @@ const WhatsAppConfig: React.FC = () => {
       )}
 
       {/* Real-time System Monitor Terminal */}
-      <div className="bg-[#0a0a0e] rounded-[2.5rem] p-8 h-96 flex flex-col border border-gray-800 shadow-2xl font-mono overflow-hidden">
+      <div className="bg-[#0b0b0e] rounded-[2.5rem] p-8 h-96 flex flex-col border border-gray-800 shadow-2xl font-mono overflow-hidden">
           <div className="flex justify-between items-center mb-6">
             <div className="flex items-center gap-4">
-                <span className="w-3 h-3 rounded-full bg-green-500 animate-pulse shadow-[0_0_12px_rgba(34,197,94,0.8)]"></span>
-                <p className="text-blue-400 text-xs uppercase tracking-[0.3em] font-black">Lipa na M-Pesa Live Monitor</p>
+                <span className="w-3 h-3 rounded-full bg-green-500 animate-pulse shadow-[0_0_10px_rgba(34,197,94,0.8)]"></span>
+                <p className="text-blue-400 text-xs uppercase tracking-[0.3em] font-black">Production Traffic Monitor</p>
             </div>
             {lastCheckoutId && (
                 <button 
                   onClick={checkPaymentStatus}
-                  className="text-[10px] text-blue-400 border border-blue-900/50 px-4 py-2 rounded-full font-black hover:bg-blue-900/30 transition uppercase tracking-widest"
+                  className="text-[10px] text-blue-400 border border-blue-900/40 px-4 py-2 rounded-full font-black hover:bg-blue-900/20 transition uppercase"
                 >
-                    {isCheckingStatus ? 'QUERYING...' : `CHECK: ${lastCheckoutId.substring(0, 8)}...`}
+                    {isCheckingStatus ? 'QUERYING...' : `CHECK STATUS: ${lastCheckoutId.substring(0, 8)}...`}
                 </button>
             )}
           </div>
           <div className="flex-1 overflow-y-auto text-[11px] leading-relaxed space-y-4 scrollbar-hide flex flex-col-reverse">
               <div ref={terminalEndRef} />
-              {terminalLogs.length === 0 ? <p className="text-gray-700 italic text-center py-20 font-sans"># Listening for Production Daraja Engine traffic...</p> : terminalLogs.map((log: any, i) => (
-                  <div key={i} className={`p-4 rounded-xl border ${
+              {terminalLogs.length === 0 ? <p className="text-gray-700 italic text-center py-20"># Connection Established. Waiting for Daraja events...</p> : terminalLogs.map((log: any, i) => (
+                  <div key={i} className={`p-4 rounded-xl border transition-all ${
                     log.type === 'error' ? 'bg-red-950/20 text-red-400 border-red-900/30' : 
                     log.type === 'success' ? 'bg-green-950/20 text-green-400 border-green-900/30' : 
                     'bg-blue-950/10 text-blue-300 border-blue-900/20'
@@ -222,12 +220,14 @@ const WhatsAppConfig: React.FC = () => {
       <div className="bg-white rounded-[3rem] shadow-2xl border border-gray-100 overflow-hidden">
         <div className="bg-gray-50 p-10 border-b border-gray-200 flex flex-col xl:flex-row justify-between items-center gap-8">
             <div className="text-center xl:text-left">
-                <h2 className="text-3xl font-black text-gray-950 tracking-tight">Production Daraja Engine</h2>
-                <p className="text-sm text-gray-500 mt-2 font-medium">Shortcode Status: <span className="text-green-600 font-bold uppercase tracking-widest">Connected to Safaricom Live</span></p>
+                <h2 className="text-3xl font-black text-gray-950 tracking-tight">Daraja Production Engine</h2>
+                <p className="text-sm text-gray-500 mt-2">Active Shortcode: <span className="text-red-600 font-black">{darajaShortcode}</span></p>
             </div>
-            <div className="flex bg-gray-200 p-2 rounded-2xl">
-                <button onClick={() => setDarajaType('Till')} className={`px-6 py-3 text-xs font-black rounded-xl transition ${darajaType === 'Till' ? 'bg-red-600 text-white shadow-lg' : 'text-gray-500'}`}>BUY GOODS (TILL)</button>
-                <button onClick={() => setDarajaType('Paybill')} className={`px-6 py-3 text-xs font-black rounded-xl transition ${darajaType === 'Paybill' ? 'bg-red-600 text-white shadow-lg' : 'text-gray-500'}`}>PAYBILL</button>
+            <div className="flex bg-gray-200 p-2 rounded-2xl shadow-inner">
+                <div className="flex bg-white rounded-xl shadow-sm p-1">
+                    <button onClick={() => setDarajaType('Till')} className={`px-6 py-3 text-xs font-black rounded-lg transition ${darajaType === 'Till' ? 'bg-red-600 text-white shadow-lg' : 'text-gray-400'}`}>BUY GOODS (TILL)</button>
+                    <button onClick={() => setDarajaType('Paybill')} className={`px-6 py-3 text-xs font-black rounded-lg transition ${darajaType === 'Paybill' ? 'bg-red-600 text-white shadow-lg' : 'text-gray-400'}`}>PAYBILL</button>
+                </div>
             </div>
         </div>
 
@@ -237,24 +237,24 @@ const WhatsAppConfig: React.FC = () => {
             <section className="bg-red-50/50 p-10 rounded-[2.5rem] border-2 border-dashed border-red-100">
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-10">
                     <div className="max-w-md">
-                        <h3 className="text-xl font-black text-red-900 flex items-center"><i className="fas fa-play-circle mr-3 text-red-600"></i> Manual Initiation Test</h3>
-                        <p className="text-sm text-red-700/70 font-bold mt-2">Force trigger an STK Push to any number to verify the production channel.</p>
+                        <h3 className="text-xl font-black text-red-900 flex items-center"><i className="fas fa-bolt mr-3 text-red-600"></i> Manual Prompt Test</h3>
+                        <p className="text-sm text-red-700/70 font-bold mt-2 leading-relaxed">If "Safaricom Accepted" shows in logs but no prompt reaches the phone, your <b>Passkey</b> is incorrect for this shortcode.</p>
                     </div>
                     <div className="flex-1 flex flex-col sm:flex-row gap-4">
                         <input 
                             type="text" 
                             value={testPhone} 
                             onChange={e => setTestPhone(e.target.value)} 
-                            className="flex-1 bg-white border-2 border-red-100 p-5 rounded-2xl text-lg font-black text-gray-900 focus:border-red-600 transition-all outline-none"
+                            className="flex-1 bg-white border-2 border-red-100 p-5 rounded-2xl text-lg font-black text-gray-900 focus:border-red-600 focus:ring-4 focus:ring-red-100 transition-all outline-none"
                             placeholder="Phone (254...)"
                         />
                         <button 
                             onClick={handleTestSTKPush} 
                             disabled={isTestingPayment}
-                            className="bg-gray-950 text-white px-12 py-5 rounded-2xl font-black text-xs hover:bg-black transition-all shadow-xl active:scale-95 disabled:opacity-50"
+                            className="bg-gray-950 text-white px-12 py-5 rounded-2xl font-black text-xs hover:bg-black transition-all shadow-xl active:scale-95 flex items-center justify-center gap-3"
                         >
-                            {isTestingPayment ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-paper-plane"></i>}
-                            PUSH TEST PAYMENT
+                            {isTestingPayment ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-satellite-dish"></i>}
+                            TEST HANDSHAKE
                         </button>
                     </div>
                 </div>
@@ -263,32 +263,30 @@ const WhatsAppConfig: React.FC = () => {
             {/* Credential Grid */}
             <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
                 <div className="space-y-3">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Business Shortcode</label>
-                    <input type="text" value={darajaShortcode} onChange={e => setDarajaShortcode(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-black text-red-600 outline-none" />
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Store Number (HQ)</label>
+                    <input type="text" value={darajaShortcode} onChange={e => setDarajaShortcode(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-black text-red-600 focus:bg-white outline-none transition-all" />
                 </div>
                 <div className="space-y-3">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Store Number</label>
-                    <input type="text" value={darajaStoreNumber} onChange={e => setDarajaStoreNumber(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-black text-gray-800 outline-none" placeholder="Same as Shortcode" />
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Till Number (PartyB)</label>
+                    <input type="text" value={darajaStoreNumber} onChange={e => setDarajaStoreNumber(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-black text-gray-800 focus:bg-white outline-none transition-all" placeholder="Same as Store Number" />
                 </div>
                 <div className="space-y-3">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">M-Pesa Passkey</label>
-                    <input type="password" value={darajaPasskey} onChange={e => setDarajaPasskey(e.target.value)} className={`w-full border-2 p-5 rounded-2xl text-xs font-mono outline-none ${isUsingSandboxPasskey ? 'bg-yellow-50 border-yellow-200 text-yellow-900' : 'bg-gray-50 border-gray-100 text-gray-800'}`} placeholder="Production Passkey" />
-                    {isUsingSandboxPasskey && (
-                        <p className="text-[9px] text-red-500 font-bold uppercase mt-1 animate-pulse">Caution: Sandbox Passkey Detected!</p>
-                    )}
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Production Passkey</label>
+                    <input type="password" value={darajaPasskey} onChange={e => setDarajaPasskey(e.target.value)} className={`w-full border-2 p-5 rounded-2xl text-xs font-mono outline-none transition-all ${isSandboxPasskey ? 'bg-yellow-50 border-yellow-200' : 'bg-gray-50 border-gray-100 focus:bg-white'}`} placeholder="Enter Production Passkey" />
+                    {isSandboxPasskey && <p className="text-[9px] text-red-600 font-black uppercase mt-1 animate-pulse">Warning: This is a Sandbox Passkey!</p>}
                 </div>
                 <div className="lg:col-span-3 space-y-3">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Consumer Key</label>
-                    <input type="text" value={darajaKey} onChange={e => setDarajaKey(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-xs font-mono outline-none" />
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Consumer Key (Live)</label>
+                    <input type="text" value={darajaKey} onChange={e => setDarajaKey(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-xs font-mono outline-none focus:bg-white transition-all" />
                 </div>
                 <div className="lg:col-span-3 space-y-3">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Consumer Secret</label>
-                    <input type="password" value={darajaSecret} onChange={e => setDarajaSecret(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-xs font-mono outline-none" />
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Consumer Secret (Live)</label>
+                    <input type="password" value={darajaSecret} onChange={e => setDarajaSecret(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-xs font-mono outline-none focus:bg-white transition-all" />
                 </div>
             </section>
 
-            <button onClick={handleSaveAndSync} className="w-full py-8 bg-red-600 text-white font-black rounded-3xl hover:bg-red-700 shadow-[0_20px_40px_-10px_rgba(220,38,38,0.5)] transition-all transform active:scale-95 uppercase tracking-[0.4em] text-sm">
-                DEPLOY & RELOAD PRODUCTION ENGINE
+            <button onClick={handleSaveAndSync} className="w-full py-8 bg-red-600 text-white font-black rounded-[2rem] hover:bg-red-700 shadow-2xl transition-all transform active:scale-95 uppercase tracking-[0.4em] text-sm">
+                Deploy & Sync Production Engine
             </button>
         </div>
       </div>

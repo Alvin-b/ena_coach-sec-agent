@@ -26,8 +26,8 @@ const runtimeConfig = {
     darajaKey: 'vz2udWubzGyYSTzkEWGo7wM6MTP2aK8uc6GnoPHAMuxgTB6J',
     darajaSecret: 'bW5AKfCRXIqQ1DyAMriKVAKkUULaQl8FLdPA8SadMqiylrwQPZR8tJAAS0mVG1rm',
     darajaPasskey: '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f', 
-    darajaShortcode: '5512238', // Store Number
-    darajaStoreNumber: '5512238', // Till Number
+    darajaShortcode: '5512238', // Store Number (BusinessShortCode)
+    darajaStoreNumber: '5512238', // Till Number (PartyB)
     darajaAccountRef: 'ENA_COACH',
     darajaCallbackUrl: 'https://ena-coach-bot.onrender.com/callback/mpesa',
     darajaSecurityCredential: '',
@@ -84,18 +84,18 @@ async function triggerSTKPush(phoneNumber, amount) {
   let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
   if (formattedPhone.startsWith('7') || formattedPhone.startsWith('1')) formattedPhone = '254' + formattedPhone;
   
-  addSystemLog(`Contacting Safaricom for ${formattedPhone}...`, 'info');
+  addSystemLog(`Pushing KES ${amount} to ${formattedPhone}...`, 'info');
 
   try {
       const tokenResult = await getDarajaToken();
       if (typeof tokenResult === 'object' && tokenResult.error) {
           addSystemLog(`Auth Failed: ${tokenResult.error}`, 'error');
-          return { success: false, error: "AUTH_ERROR", message: `Authentication Failed: ${tokenResult.error}. Check Consumer Key/Secret.` };
+          return { success: false, error: "AUTH_ERROR", message: tokenResult.error };
       }
       
       const timestamp = getDarajaTimestamp();
-      const shortcode = runtimeConfig.darajaShortcode.trim();
-      const storeNumber = runtimeConfig.darajaStoreNumber.trim() || shortcode;
+      const shortcode = runtimeConfig.darajaShortcode.trim(); // Store Number
+      const tillNumber = runtimeConfig.darajaStoreNumber.trim(); // Till Number
       const passkey = runtimeConfig.darajaPasskey.trim();
       const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
       
@@ -108,11 +108,11 @@ async function triggerSTKPush(phoneNumber, amount) {
         "TransactionType": transactionType,
         "Amount": Math.ceil(amount),
         "PartyA": formattedPhone,
-        "PartyB": storeNumber,
+        "PartyB": runtimeConfig.darajaType === 'Till' ? tillNumber : shortcode,
         "PhoneNumber": formattedPhone,
         "CallBackURL": runtimeConfig.darajaCallbackUrl.trim(),
         "AccountReference": runtimeConfig.darajaAccountRef.trim().replace(/\s/g, '').substring(0, 12),
-        "TransactionDesc": "BusBooking"
+        "TransactionDesc": "BusTicket"
       };
 
       const response = await fetch(`${getDarajaBaseUrl()}/mpesa/stkpush/v1/processrequest`, {
@@ -124,17 +124,16 @@ async function triggerSTKPush(phoneNumber, amount) {
       const data = await response.json();
 
       if (data.ResponseCode === "0") {
-          addSystemLog(`STK Sent Successfully: ${data.ResponseDescription}`, 'success');
+          addSystemLog(`Safaricom Accepted: ${data.ResponseDescription}. ID: ${data.CheckoutRequestID}`, 'success');
           return { success: true, checkoutRequestId: data.CheckoutRequestID, description: data.ResponseDescription };
       }
       
-      const errorMessage = data.CustomerMessage || data.errorMessage || data.ResponseDescription || "Safaricom rejected the request.";
-      const failMsg = `M-Pesa Rejected [${data.ResponseCode}]: ${errorMessage}`;
+      const failMsg = `Rejection [${data.ResponseCode}]: ${data.CustomerMessage || data.ResponseDescription || "Unknown Error"}`;
       addSystemLog(failMsg, 'error');
-      return { success: false, error: "REJECTION", message: errorMessage, code: data.ResponseCode };
+      return { success: false, error: "REJECTION", message: failMsg };
   } catch (error) {
-      addSystemLog(`API Connection Error: ${error.message}`, 'error');
-      return { success: false, error: "SYSTEM_ERROR", message: `Connection Error: ${error.message}` };
+      addSystemLog(`Connection Error: ${error.message}`, 'error');
+      return { success: false, error: "SYSTEM_ERROR", message: error.message };
   }
 }
 
@@ -160,10 +159,10 @@ async function queryDarajaStatus(id) {
         });
         const data = await response.json();
         if (data.ResponseCode === "0") {
-            if (data.ResultCode === "0") return { status: 'COMPLETED', message: "Payment Verified" };
+            if (data.ResultCode === "0") return { status: 'COMPLETED', message: "Payment Successful" };
             return { status: 'FAILED', message: data.ResultDesc };
         }
-        return { status: 'PENDING', message: data.ResponseDescription || "Awaiting PIN" };
+        return { status: 'PENDING', message: data.errorMessage || data.ResponseDescription || "Awaiting PIN" };
     } catch (e) { return { status: 'ERROR', message: e.message }; }
 }
 
@@ -181,26 +180,24 @@ app.get('/api/debug/latest-error', (req, res) => {
 
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog(`Production configuration updated.`, 'info');
-    res.status(200).json({ success: true });
+    addSystemLog(`Settings updated.`, 'info');
+    res.json({ success: true });
 });
 
 app.post('/api/payment/initiate', async (req, res) => {
-    const result = await triggerSTKPush(req.body.phoneNumber, req.body.amount);
-    res.status(200).json(result);
+    res.json(await triggerSTKPush(req.body.phoneNumber, req.body.amount));
 });
 
 app.get('/api/payment/status/:id', async (req, res) => {
-    const result = await queryDarajaStatus(req.params.id);
-    res.status(200).json(result);
+    res.json(await queryDarajaStatus(req.params.id));
 });
 
 app.post('/callback/mpesa', (req, res) => {
     const { Body } = req.body;
     if (Body?.stkCallback) {
         const { CheckoutRequestID, ResultCode, ResultDesc } = Body.stkCallback;
-        if(ResultCode === 0) addSystemLog(`SUCCESS: Payment Confirmed for ${CheckoutRequestID}`, 'success');
-        else addSystemLog(`CANCELLED: Payment Failed for ${CheckoutRequestID} (${ResultDesc})`, 'error');
+        if(ResultCode === 0) addSystemLog(`SUCCESS: Payment confirmed for ${CheckoutRequestID}`, 'success');
+        else addSystemLog(`CANCELLED: Payment failed for ${CheckoutRequestID} - ${ResultDesc}`, 'error');
     }
     res.sendStatus(200);
 });
@@ -208,4 +205,4 @@ app.post('/callback/mpesa', (req, res) => {
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach AI server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach Engine running on port ${PORT}`));
