@@ -19,6 +19,7 @@ const WhatsAppConfig: React.FC = () => {
   const [darajaShortcode, setDarajaShortcode] = useState('');
   const [darajaAccountRef, setDarajaAccountRef] = useState('ENA_COACH');
   const [securityCredential, setSecurityCredential] = useState('');
+  const [initiatorPassword, setInitiatorPassword] = useState('');
 
   // Test Phone State
   const [testPhone, setTestPhone] = useState('0712345678');
@@ -27,20 +28,17 @@ const WhatsAppConfig: React.FC = () => {
   const [isTestingPayment, setIsTestingPayment] = useState(false);
   const [isTestingAuth, setIsTestingAuth] = useState(false);
   const [currentCheckoutId, setCurrentCheckoutId] = useState('');
-  const [paymentStatus, setPaymentStatus] = useState<any>(null);
-  const [terminalLogs, setTerminalLogs] = useState<{msg: string, type: 'info' | 'error' | 'success'}[]>([]);
+  const [terminalLogs, setTerminalLogs] = useState<{msg: string, type: 'info' | 'error' | 'success', timestamp: string}[]>([]);
 
   const terminalEndRef = useRef<HTMLDivElement>(null);
 
-  const addTerminalLog = (msg: string, type: 'info' | 'error' | 'success' = 'info') => {
-      setTerminalLogs(prev => [...prev, { msg, type }]);
+  const fetchLogs = async () => {
+      try {
+          const res = await fetch('/api/debug/system-logs');
+          const data = await res.json();
+          setTerminalLogs(data);
+      } catch (e) {}
   };
-
-  useEffect(() => {
-      if (terminalEndRef.current) {
-          terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
-      }
-  }, [terminalLogs]);
 
   useEffect(() => {
       fetch('/api/config')
@@ -58,8 +56,11 @@ const WhatsAppConfig: React.FC = () => {
               setDarajaShortcode(data.darajaShortcode || '');
               setDarajaAccountRef(data.darajaAccountRef || 'ENA_COACH');
               setSecurityCredential(data.darajaSecurityCredential || '');
-              addTerminalLog(`System Loaded: Using ${data.darajaEnv.toUpperCase()} M-Pesa credentials for Shortcode ${data.darajaShortcode}.`, 'info');
+              setInitiatorPassword(data.darajaInitiatorPassword || '');
           });
+      
+      const poll = setInterval(fetchLogs, 3000);
+      return () => clearInterval(poll);
   }, []);
 
   const handleSaveAndSync = async () => {
@@ -79,44 +80,33 @@ const WhatsAppConfig: React.FC = () => {
                 darajaPasskey: darajaPasskey.trim(),
                 darajaShortcode: darajaShortcode.trim(),
                 darajaAccountRef: darajaAccountRef.trim(),
-                darajaSecurityCredential: securityCredential.trim()
+                darajaSecurityCredential: securityCredential.trim(),
+                darajaInitiatorPassword: initiatorPassword.trim()
             })
         });
         if (res.ok) {
-            addTerminalLog('✅ Credentials saved and synced with server.', 'success');
             return true;
         }
-    } catch (e: any) { addTerminalLog(`Sync Error: ${e.message}`, 'error'); }
+    } catch (e: any) {}
     return false;
   };
 
   const handleTestAuth = async () => {
       setIsTestingAuth(true);
-      addTerminalLog(`Testing ${darajaEnv.toUpperCase()} Authentication...`, 'info');
       try {
           await handleSaveAndSync();
           const res = await fetch('/api/daraja/test-auth');
           const data = await res.json();
-          if (res.ok && data.success) {
-              addTerminalLog(`🚀 Safaricom Auth Success: ${data.message}`, 'success');
-          } else {
-              addTerminalLog(`❌ Auth Failed: ${data.error || 'Check Consumer Key/Secret'}`, 'error');
-          }
-      } catch (e: any) { addTerminalLog(`Auth Error: ${e.message}`, 'error'); }
+          if (res.ok) fetchLogs();
+      } catch (e: any) {}
       finally { setIsTestingAuth(false); }
   };
 
   const handleTestSTKPush = async () => {
-      if (!testPhone) {
-          addTerminalLog("Please enter a phone number to test.", "error");
-          return;
-      }
+      if (!testPhone) return;
       setIsTestingPayment(true);
-      addTerminalLog(`Initiating STK Push to ${testPhone}...`, 'info');
       try {
-          const synced = await handleSaveAndSync();
-          if (!synced) return;
-
+          await handleSaveAndSync();
           const res = await fetch('/api/payment/initiate', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -125,157 +115,136 @@ const WhatsAppConfig: React.FC = () => {
           const data = await res.json();
           if (data.success) {
               setCurrentCheckoutId(data.checkoutRequestId);
-              addTerminalLog(`STK Prompts Sent! ID: ${data.checkoutRequestId}`, 'success');
-          } else {
-              addTerminalLog(`Payment Initiation Failed: ${data.message}`, 'error');
-              if (data.error) addTerminalLog(`Error Code: ${data.error}`, 'error');
           }
-      } catch (e: any) { addTerminalLog(`Internal Error: ${e.message}`, 'error'); }
+          fetchLogs();
+      } catch (e: any) {}
       finally { setIsTestingPayment(false); }
-  };
-
-  const handleCheckStatus = async () => {
-      if (!currentCheckoutId) return;
-      try {
-          const res = await fetch(`/api/payment/status/${currentCheckoutId}`);
-          const data = await res.json();
-          setPaymentStatus(data);
-          addTerminalLog(`Current Status: ${data.status} - ${data.message}`, data.status === 'COMPLETED' ? 'success' : 'info');
-      } catch (e: any) { addTerminalLog(`Status Error: ${e.message}`, 'error'); }
   };
 
   return (
     <div className="space-y-8 pb-20">
       
-      {/* Terminal Display */}
-      <div className="bg-black rounded-xl p-4 h-64 flex flex-col border border-gray-800 shadow-2xl font-mono overflow-hidden">
-          <div className="flex justify-between items-center mb-2">
-            <p className="text-blue-400 text-[10px] uppercase tracking-widest font-bold">Daraja System Monitor</p>
-            <button onClick={() => setTerminalLogs([])} className="text-[10px] text-gray-500 hover:text-white uppercase">Clear Console</button>
+      {/* Real-time System Monitor Terminal */}
+      <div className="bg-gray-950 rounded-2xl p-6 h-80 flex flex-col border border-gray-800 shadow-2xl font-mono overflow-hidden">
+          <div className="flex justify-between items-center mb-4">
+            <div className="flex items-center gap-3">
+                <span className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.8)]"></span>
+                <p className="text-blue-400 text-xs uppercase tracking-[0.2em] font-black">Lipa na M-Pesa Live System Monitor</p>
+            </div>
+            <button className="text-[10px] text-gray-500 hover:text-white uppercase font-bold tracking-widest border border-gray-800 px-3 py-1 rounded-full">Reset Engine</button>
           </div>
-          <div className="flex-1 overflow-y-auto text-[11px] leading-tight space-y-1 scrollbar-hide">
-              {terminalLogs.length === 0 ? <p className="text-gray-700 italic"># Waiting for API activity...</p> : terminalLogs.map((log, i) => (
-                  <div key={i} className={`whitespace-pre-wrap ${log.type === 'error' ? 'text-red-400' : log.type === 'success' ? 'text-green-400' : 'text-gray-300'}`}>
-                      <span className="text-gray-600 mr-2">[{new Date().toLocaleTimeString()}]</span>{log.msg}
+          <div className="flex-1 overflow-y-auto text-xs leading-relaxed space-y-3 scrollbar-hide flex flex-col-reverse">
+              <div ref={terminalEndRef} />
+              {terminalLogs.length === 0 ? <p className="text-gray-700 italic text-center py-10"># Systems idle. Listening for M-Pesa API activity...</p> : terminalLogs.map((log: any, i) => (
+                  <div key={i} className={`p-3 rounded-lg border transition-all ${
+                    log.type === 'error' ? 'bg-red-950/20 text-red-400 border-red-900/30' : 
+                    log.type === 'success' ? 'bg-green-950/20 text-green-400 border-green-900/30' : 
+                    'bg-blue-950/10 text-blue-300 border-blue-900/20'
+                  }`}>
+                      <div className="flex justify-between items-start gap-4">
+                          <span className="font-bold flex-1 flex gap-3">
+                              <span className="opacity-50">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+                              <span>{log.msg}</span>
+                          </span>
+                          <span className={`text-[9px] uppercase font-black px-2 py-0.5 rounded ${
+                            log.type === 'error' ? 'bg-red-500 text-white' : 
+                            log.type === 'success' ? 'bg-green-500 text-white' : 
+                            'bg-blue-500 text-white'
+                          }`}>{log.type}</span>
+                      </div>
                   </div>
               ))}
-              <div ref={terminalEndRef} />
           </div>
       </div>
 
-      {/* Configuration Hub */}
-      <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
-        <div className="bg-gray-50 p-6 border-b border-gray-200 flex justify-between items-center">
-            <div>
-                <h2 className="text-xl font-bold text-gray-800">Production Integration</h2>
-                <p className="text-xs text-gray-500">Connected to Safaricom Daraja Production API</p>
+      {/* Main Configuration Interface */}
+      <div className="bg-white rounded-3xl shadow-2xl border border-gray-200 overflow-hidden">
+        <div className="bg-gradient-to-r from-gray-50 to-white p-8 border-b border-gray-200 flex flex-col md:flex-row justify-between items-center gap-6">
+            <div className="text-center md:text-left">
+                <h2 className="text-2xl font-black text-gray-800 tracking-tight">Daraja Production Engine</h2>
+                <p className="text-sm text-gray-500 mt-1">Managing Live Payments for Till Number <span className="text-red-600 font-black">{darajaShortcode}</span></p>
             </div>
-            <div className="flex bg-gray-200 p-1 rounded-lg">
-                <button onClick={() => setDarajaEnv('sandbox')} className={`px-3 py-1 text-[10px] font-bold rounded transition ${darajaEnv === 'sandbox' ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500'}`}>SANDBOX</button>
-                <button onClick={() => setDarajaEnv('production')} className={`px-3 py-1 text-[10px] font-bold rounded transition ${darajaEnv === 'production' ? 'bg-red-600 text-white' : 'text-gray-500'}`}>LIVE PRODUCTION</button>
+            <div className="flex bg-gray-100 p-1.5 rounded-2xl shadow-inner">
+                <button onClick={() => setDarajaEnv('sandbox')} className={`px-6 py-2 text-xs font-black rounded-xl transition-all duration-300 ${darajaEnv === 'sandbox' ? 'bg-white shadow-lg text-gray-800' : 'text-gray-400 hover:text-gray-600'}`}>SANDBOX</button>
+                <button onClick={() => setDarajaEnv('production')} className={`px-6 py-2 text-xs font-black rounded-xl transition-all duration-300 ${darajaEnv === 'production' ? 'bg-red-600 text-white shadow-[0_0_15px_rgba(220,38,38,0.4)]' : 'text-gray-400 hover:text-gray-600'}`}>PRODUCTION</button>
             </div>
         </div>
 
-        <div className="p-6 space-y-10">
-            {/* WhatsApp Section */}
-            <section className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="md:col-span-1">
-                    <h3 className="text-sm font-bold text-gray-800 flex items-center"><i className="fab fa-whatsapp mr-2 text-green-600 text-lg"></i> WhatsApp Messaging</h3>
-                    <p className="text-[10px] text-gray-500 mt-1">Connect your Evolution API instance to Martha AI.</p>
+        <div className="p-8 space-y-12">
+            
+            {/* Payment Diagnostic Center */}
+            <section className="bg-red-50/50 p-8 rounded-3xl border border-red-100 relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-8 opacity-5">
+                    <i className="fas fa-credit-card text-8xl text-red-900"></i>
                 </div>
-                <div className="md:col-span-2 grid grid-cols-2 gap-4">
-                    <div className="col-span-2">
-                        <label className="text-[10px] font-bold text-gray-400 uppercase">Evolution Base URL</label>
-                        <input type="text" value={apiUrl} onChange={e => setApiUrl(e.target.value)} className="w-full border p-2 rounded text-xs bg-gray-50" placeholder="https://api.example.com" />
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-10 relative z-10">
+                    <div className="max-w-md">
+                        <h3 className="text-lg font-black text-red-800 flex items-center"><i className="fas fa-vial mr-3"></i> System Diagnostic</h3>
+                        <p className="text-sm text-red-600/80 mt-2 font-medium leading-relaxed">Instantly verify that your production keys are valid by triggering a real KES 1 prompt to your phone.</p>
                     </div>
-                    <div>
-                        <label className="text-[10px] font-bold text-gray-400 uppercase">Instance Name</label>
-                        <input type="text" value={instanceName} onChange={e => setInstanceName(e.target.value)} className="w-full border p-2 rounded text-xs font-bold" />
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-bold text-gray-400 uppercase">API Key / Token</label>
-                        <input type="password" value={apiToken} onChange={e => setApiToken(e.target.value)} className="w-full border p-2 rounded text-xs" />
-                    </div>
-                </div>
-            </section>
-
-            {/* M-Pesa Daraja Section */}
-            <section className={`grid grid-cols-1 md:grid-cols-3 gap-6 p-5 rounded-xl transition-all border ${darajaEnv === 'production' ? 'bg-red-50 border-red-200' : 'bg-blue-50 border-blue-200'}`}>
-                <div className="md:col-span-1">
-                    <h3 className={`text-sm font-bold flex items-center ${darajaEnv === 'production' ? 'text-red-800' : 'text-blue-800'}`}>
-                        <i className="fas fa-credit-card mr-2"></i> Daraja Lipa na M-Pesa
-                    </h3>
-                    
-                    <div className="mt-4 p-3 bg-white/70 rounded-lg border border-white backdrop-blur-sm">
-                        <button 
-                            onClick={handleTestAuth} 
-                            disabled={isTestingAuth}
-                            className={`w-full py-2 mb-4 rounded text-[10px] font-bold transition flex items-center justify-center gap-2 ${isTestingAuth ? 'bg-gray-300' : 'bg-white border border-gray-300 hover:bg-gray-50 shadow-sm'}`}
-                        >
-                            {isTestingAuth ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-shield-alt"></i>}
-                            VALIDATE API ACCESS
-                        </button>
-
-                        <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">Test Push Phone</label>
+                    <div className="flex-1 flex flex-col sm:flex-row gap-4">
                         <input 
                             type="text" 
                             value={testPhone} 
                             onChange={e => setTestPhone(e.target.value)} 
-                            className="w-full border p-2 rounded text-sm font-bold mb-3 focus:border-red-500 outline-none"
-                            placeholder="07XXXXXXXX"
+                            className="flex-1 bg-white border-2 border-red-200 p-4 rounded-2xl text-base font-black text-gray-800 focus:border-red-600 focus:ring-4 focus:ring-red-100 outline-none transition-all"
+                            placeholder="Recipient Phone (e.g. 0712...)"
                         />
-                        <div className="flex gap-2">
-                            <button onClick={handleTestSTKPush} disabled={isTestingPayment} className="flex-1 py-2 bg-gray-900 text-white text-[10px] font-bold rounded hover:bg-black transition shadow-md">PUSH STK</button>
-                            <button onClick={handleCheckStatus} disabled={!currentCheckoutId} className="flex-1 py-2 border border-gray-300 text-[10px] font-bold rounded hover:bg-white transition bg-white">STATUS</button>
-                        </div>
-                    </div>
-                </div>
-                <div className="md:col-span-2 grid grid-cols-2 gap-4">
-                    <div>
-                        <label className="text-[10px] font-bold text-gray-400 uppercase">Consumer Key</label>
-                        <input type="text" value={darajaKey} onChange={e => setDarajaKey(e.target.value)} className="w-full border p-2 rounded text-xs font-mono" placeholder="Provided Key" />
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-bold text-gray-400 uppercase">Consumer Secret</label>
-                        <input type="password" value={darajaSecret} onChange={e => setDarajaSecret(e.target.value)} className="w-full border p-2 rounded text-xs font-mono" placeholder="Provided Secret" />
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-bold text-gray-400 uppercase">Payment Method</label>
-                        <select 
-                            value={darajaType} 
-                            onChange={e => setDarajaType(e.target.value as any)} 
-                            className="w-full border p-2 rounded text-xs font-bold bg-white"
+                        <button 
+                            onClick={handleTestSTKPush} 
+                            disabled={isTestingPayment}
+                            className="bg-gray-900 text-white px-10 py-4 rounded-2xl font-black text-sm hover:bg-black transition-all shadow-xl active:scale-95 flex items-center justify-center gap-3 disabled:bg-gray-400"
                         >
-                            <option value="Paybill">M-Pesa Paybill</option>
-                            <option value="Till">Lipa na M-Pesa Till</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-bold text-gray-400 uppercase">Business Shortcode</label>
-                        <input type="text" value={darajaShortcode} onChange={e => setDarajaShortcode(e.target.value)} className="w-full border p-2 rounded text-xs font-bold" placeholder="5512238" />
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-bold text-gray-400 uppercase">Account Reference</label>
-                        <input type="text" value={darajaAccountRef} onChange={e => setDarajaAccountRef(e.target.value)} className="w-full border p-2 rounded text-xs font-bold border-orange-200" placeholder="ENA_COACH" />
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-bold text-gray-400 uppercase">M-Pesa Passkey</label>
-                        <input type="password" value={darajaPasskey} onChange={e => setDarajaPasskey(e.target.value)} className="w-full border p-2 rounded text-xs font-mono" placeholder="Provided Passkey" />
-                    </div>
-                    <div className="col-span-2">
-                        <label className="text-[10px] font-bold text-gray-400 uppercase">Security Credential (Encrypted)</label>
-                        <textarea 
-                          value={securityCredential} 
-                          onChange={e => setSecurityCredential(e.target.value)} 
-                          className="w-full border p-2 rounded text-[10px] font-mono h-16 bg-gray-50 resize-none" 
-                          placeholder="Security Credential for advanced operations..."
-                        ></textarea>
+                            {isTestingPayment ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-rocket"></i>}
+                            RUN DIAGNOSTIC
+                        </button>
                     </div>
                 </div>
             </section>
 
-            <button onClick={handleSaveAndSync} className="w-full py-5 bg-red-600 text-white font-black rounded-xl hover:bg-red-700 shadow-xl transition-all transform active:scale-[0.98] uppercase tracking-widest">
-                <i className="fas fa-save mr-2"></i> DEPLOY PRODUCTION ENVIRONMENT
+            {/* Credential Matrix */}
+            <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <div className="space-y-2">
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Consumer Key</label>
+                    <input type="text" value={darajaKey} onChange={e => setDarajaKey(e.target.value)} className="w-full bg-gray-50 border border-gray-200 p-4 rounded-2xl text-xs font-mono focus:bg-white focus:border-blue-500 outline-none transition-all" />
+                </div>
+                <div className="space-y-2">
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Consumer Secret</label>
+                    <input type="password" value={darajaSecret} onChange={e => setDarajaSecret(e.target.value)} className="w-full bg-gray-50 border border-gray-200 p-4 rounded-2xl text-xs font-mono focus:bg-white focus:border-blue-500 outline-none transition-all" />
+                </div>
+                <div className="space-y-2">
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Business Shortcode (Till)</label>
+                    <input type="text" value={darajaShortcode} onChange={e => setDarajaShortcode(e.target.value)} className="w-full border-2 border-red-100 bg-white p-4 rounded-2xl text-base font-black text-red-600 outline-none" />
+                </div>
+                <div className="space-y-2">
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">M-Pesa Online Passkey</label>
+                    <input type="password" value={darajaPasskey} onChange={e => setDarajaPasskey(e.target.value)} className="w-full bg-gray-50 border border-gray-200 p-4 rounded-2xl text-xs font-mono outline-none" />
+                </div>
+                <div className="space-y-2">
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Initiator Password</label>
+                    <input type="password" value={initiatorPassword} onChange={e => setInitiatorPassword(e.target.value)} className="w-full bg-gray-50 border border-gray-200 p-4 rounded-2xl text-xs font-mono outline-none" />
+                </div>
+                <div className="space-y-2">
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Payment Type</label>
+                    <select value={darajaType} onChange={e => setDarajaType(e.target.value as any)} className="w-full border border-gray-200 bg-gray-50 p-4 rounded-2xl text-xs font-black outline-none appearance-none">
+                        <option value="Till">Lipa na M-Pesa Buy Goods (Till)</option>
+                        <option value="Paybill">M-Pesa Paybill</option>
+                    </select>
+                </div>
+                <div className="col-span-1 md:col-span-2 lg:col-span-3 space-y-2">
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Security Credential (RSA Encrypted)</label>
+                    <textarea 
+                      value={securityCredential} 
+                      onChange={e => setSecurityCredential(e.target.value)} 
+                      className="w-full bg-gray-50 border border-gray-200 p-4 rounded-2xl text-[10px] font-mono h-24 resize-none outline-none focus:bg-white focus:border-blue-500" 
+                      placeholder="Public Key provided by Safaricom..."
+                    ></textarea>
+                </div>
+            </section>
+
+            <button onClick={handleSaveAndSync} className="w-full py-6 bg-red-600 text-white font-black rounded-2xl hover:bg-red-700 shadow-[0_15px_30px_rgba(220,38,38,0.3)] hover:shadow-[0_20px_40px_rgba(220,38,38,0.4)] transition-all transform active:scale-[0.98] uppercase tracking-[0.3em] text-sm flex items-center justify-center gap-4">
+                <i className="fas fa-shield-check text-xl"></i>
+                DEPLOY LIVE PRODUCTION ENVIRONMENT
             </button>
         </div>
       </div>
