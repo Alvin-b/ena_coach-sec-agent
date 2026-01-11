@@ -20,14 +20,14 @@ const runtimeConfig = {
     evolutionToken: (process.env.EVOLUTION_API_TOKEN || '').trim(),
     instanceName: (process.env.INSTANCE_NAME || 'EnaCoach').trim(),
     
-    // M-Pesa (Daraja) - PRODUCTION CREDENTIALS
+    // M-Pesa (Daraja) - PRODUCTION CREDENTIALS (User Verified)
     darajaEnv: 'production', 
     darajaType: 'Till', 
     darajaKey: 'vz2udWubzGyYSTzkEWGo7wM6MTP2aK8uc6GnoPHAMuxgTB6J',
     darajaSecret: 'bW5AKfCRXIqQ1DyAMriKVAKkUULaQl8FLdPA8SadMqiylrwQPZR8tJAAS0mVG1rm',
     darajaPasskey: '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f', 
-    darajaShortcode: '5512238', // Store Number (BusinessShortCode)
-    darajaStoreNumber: '5512238', // Till Number (PartyB)
+    darajaShortcode: '5512238', // This is your Business Short Code (Store Number)
+    darajaStoreNumber: '5512238', // This is your PartyB (Till Number)
     darajaAccountRef: 'ENA_COACH',
     darajaCallbackUrl: 'https://ena-coach-bot.onrender.com/callback/mpesa',
     darajaSecurityCredential: '',
@@ -99,6 +99,7 @@ async function triggerSTKPush(phoneNumber, amount) {
       const passkey = runtimeConfig.darajaPasskey.trim();
       const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
       
+      // For Buy Goods, TransactionType must be CustomerBuyGoodsOnline
       const transactionType = runtimeConfig.darajaType === 'Till' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline';
 
       const payload = {
@@ -108,7 +109,7 @@ async function triggerSTKPush(phoneNumber, amount) {
         "TransactionType": transactionType,
         "Amount": Math.ceil(amount),
         "PartyA": formattedPhone,
-        "PartyB": runtimeConfig.darajaType === 'Till' ? tillNumber : shortcode,
+        "PartyB": tillNumber, // For Buy Goods, this is the Till Number
         "PhoneNumber": formattedPhone,
         "CallBackURL": runtimeConfig.darajaCallbackUrl.trim(),
         "AccountReference": runtimeConfig.darajaAccountRef.trim().replace(/\s/g, '').substring(0, 12),
@@ -128,11 +129,11 @@ async function triggerSTKPush(phoneNumber, amount) {
           return { success: true, checkoutRequestId: data.CheckoutRequestID, description: data.ResponseDescription };
       }
       
-      const failMsg = `Rejection [${data.ResponseCode}]: ${data.CustomerMessage || data.ResponseDescription || "Unknown Error"}`;
+      const failMsg = `M-Pesa Rejected [${data.ResponseCode}]: ${data.CustomerMessage || data.ResponseDescription}`;
       addSystemLog(failMsg, 'error');
       return { success: false, error: "REJECTION", message: failMsg };
   } catch (error) {
-      addSystemLog(`Connection Error: ${error.message}`, 'error');
+      addSystemLog(`API Connection Error: ${error.message}`, 'error');
       return { success: false, error: "SYSTEM_ERROR", message: error.message };
   }
 }
@@ -159,10 +160,10 @@ async function queryDarajaStatus(id) {
         });
         const data = await response.json();
         if (data.ResponseCode === "0") {
-            if (data.ResultCode === "0") return { status: 'COMPLETED', message: "Payment Successful" };
+            if (data.ResultCode === "0") return { status: 'COMPLETED', message: "Payment Verified" };
             return { status: 'FAILED', message: data.ResultDesc };
         }
-        return { status: 'PENDING', message: data.errorMessage || data.ResponseDescription || "Awaiting PIN" };
+        return { status: 'PENDING', message: data.ResponseDescription || "Awaiting PIN" };
     } catch (e) { return { status: 'ERROR', message: e.message }; }
 }
 
@@ -180,7 +181,7 @@ app.get('/api/debug/latest-error', (req, res) => {
 
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog(`Settings updated.`, 'info');
+    addSystemLog(`Production configuration updated.`, 'info');
     res.json({ success: true });
 });
 
@@ -196,8 +197,8 @@ app.post('/callback/mpesa', (req, res) => {
     const { Body } = req.body;
     if (Body?.stkCallback) {
         const { CheckoutRequestID, ResultCode, ResultDesc } = Body.stkCallback;
-        if(ResultCode === 0) addSystemLog(`SUCCESS: Payment confirmed for ${CheckoutRequestID}`, 'success');
-        else addSystemLog(`CANCELLED: Payment failed for ${CheckoutRequestID} - ${ResultDesc}`, 'error');
+        if(ResultCode === 0) addSystemLog(`SUCCESS: Payment Confirmed for ${CheckoutRequestID}`, 'success');
+        else addSystemLog(`CANCELLED: Payment Failed for ${CheckoutRequestID} (${ResultDesc})`, 'error');
     }
     res.sendStatus(200);
 });
@@ -205,4 +206,4 @@ app.post('/callback/mpesa', (req, res) => {
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach Engine running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach AI server running on port ${PORT}`));
