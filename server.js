@@ -25,7 +25,7 @@ const runtimeConfig = {
     darajaType: 'Till', 
     darajaKey: 'vz2udWubzGyYSTzkEWGo7wM6MTP2aK8uc6GnoPHAMuxgTB6J',
     darajaSecret: 'bW5AKfCRXIqQ1DyAMriKVAKkUULaQl8FLdPA8SadMqiylrwQPZR8tJAAS0mVG1rm',
-    darajaPasskey: '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f', // NOTE: Ensure this is your PRODUCTION passkey
+    darajaPasskey: '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f', 
     darajaShortcode: '5512238', // Store Number
     darajaStoreNumber: '5512238', // Till Number
     darajaAccountRef: 'ENA_COACH',
@@ -84,18 +84,18 @@ async function triggerSTKPush(phoneNumber, amount) {
   let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
   if (formattedPhone.startsWith('7') || formattedPhone.startsWith('1')) formattedPhone = '254' + formattedPhone;
   
-  addSystemLog(`Pushing KES ${amount} to ${formattedPhone} (Mode: ${runtimeConfig.darajaType})...`, 'info');
+  addSystemLog(`Contacting Safaricom for ${formattedPhone}...`, 'info');
 
   try {
       const tokenResult = await getDarajaToken();
       if (typeof tokenResult === 'object' && tokenResult.error) {
           addSystemLog(`Auth Failed: ${tokenResult.error}`, 'error');
-          return { success: false, error: "AUTH_ERROR", message: tokenResult.error };
+          return { success: false, error: "AUTH_ERROR", message: `Authentication Failed: ${tokenResult.error}. Check Consumer Key/Secret.` };
       }
       
       const timestamp = getDarajaTimestamp();
-      const shortcode = runtimeConfig.darajaShortcode.trim(); // Store Number
-      const storeNumber = runtimeConfig.darajaStoreNumber.trim() || shortcode; // Till Number
+      const shortcode = runtimeConfig.darajaShortcode.trim();
+      const storeNumber = runtimeConfig.darajaStoreNumber.trim() || shortcode;
       const passkey = runtimeConfig.darajaPasskey.trim();
       const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
       
@@ -124,16 +124,17 @@ async function triggerSTKPush(phoneNumber, amount) {
       const data = await response.json();
 
       if (data.ResponseCode === "0") {
-          addSystemLog(`Safaricom Accepted: ${data.ResponseDescription}. RequestID: ${data.CheckoutRequestID}`, 'success');
+          addSystemLog(`STK Sent Successfully: ${data.ResponseDescription}`, 'success');
           return { success: true, checkoutRequestId: data.CheckoutRequestID, description: data.ResponseDescription };
       }
       
-      const failMsg = `M-Pesa Rejected [${data.ResponseCode}]: ${data.CustomerMessage || data.errorMessage || data.ResponseDescription}`;
+      const errorMessage = data.CustomerMessage || data.errorMessage || data.ResponseDescription || "Safaricom rejected the request.";
+      const failMsg = `M-Pesa Rejected [${data.ResponseCode}]: ${errorMessage}`;
       addSystemLog(failMsg, 'error');
-      return { success: false, error: "REJECTION", message: failMsg };
+      return { success: false, error: "REJECTION", message: errorMessage, code: data.ResponseCode };
   } catch (error) {
       addSystemLog(`API Connection Error: ${error.message}`, 'error');
-      return { success: false, error: "SYSTEM_ERROR", message: error.message };
+      return { success: false, error: "SYSTEM_ERROR", message: `Connection Error: ${error.message}` };
   }
 }
 
@@ -180,7 +181,7 @@ app.get('/api/debug/latest-error', (req, res) => {
 
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog(`Configuration Saved.`, 'info');
+    addSystemLog(`Production configuration updated.`, 'info');
     res.status(200).json({ success: true });
 });
 
