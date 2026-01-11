@@ -20,14 +20,14 @@ const runtimeConfig = {
     evolutionToken: (process.env.EVOLUTION_API_TOKEN || '').trim(),
     instanceName: (process.env.INSTANCE_NAME || 'EnaCoach').trim(),
     
-    // M-Pesa (Daraja) - PRODUCTION CREDENTIALS (User Verified)
+    // M-Pesa (Daraja) - PRODUCTION CREDENTIALS (Verified by User)
     darajaEnv: 'production', 
     darajaType: 'Till', 
     darajaKey: 'vz2udWubzGyYSTzkEWGo7wM6MTP2aK8uc6GnoPHAMuxgTB6J',
     darajaSecret: 'bW5AKfCRXIqQ1DyAMriKVAKkUULaQl8FLdPA8SadMqiylrwQPZR8tJAAS0mVG1rm',
     darajaPasskey: '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f', 
-    darajaShortcode: '5512238', // This is your Business Short Code (Store Number)
-    darajaStoreNumber: '5512238', // This is your PartyB (Till Number)
+    darajaShortcode: '5512238', // Business Short Code (Store Number)
+    darajaStoreNumber: '5512238', // PartyB (Till Number)
     darajaAccountRef: 'ENA_COACH',
     darajaCallbackUrl: 'https://ena-coach-bot.onrender.com/callback/mpesa',
     darajaSecurityCredential: '',
@@ -94,12 +94,11 @@ async function triggerSTKPush(phoneNumber, amount) {
       }
       
       const timestamp = getDarajaTimestamp();
-      const shortcode = runtimeConfig.darajaShortcode.trim(); // Store Number
-      const tillNumber = runtimeConfig.darajaStoreNumber.trim(); // Till Number
+      const shortcode = runtimeConfig.darajaShortcode.trim(); 
+      const tillNumber = runtimeConfig.darajaStoreNumber.trim(); 
       const passkey = runtimeConfig.darajaPasskey.trim();
       const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
       
-      // For Buy Goods, TransactionType must be CustomerBuyGoodsOnline
       const transactionType = runtimeConfig.darajaType === 'Till' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline';
 
       const payload = {
@@ -109,7 +108,7 @@ async function triggerSTKPush(phoneNumber, amount) {
         "TransactionType": transactionType,
         "Amount": Math.ceil(amount),
         "PartyA": formattedPhone,
-        "PartyB": tillNumber, // For Buy Goods, this is the Till Number
+        "PartyB": tillNumber,
         "PhoneNumber": formattedPhone,
         "CallBackURL": runtimeConfig.darajaCallbackUrl.trim(),
         "AccountReference": runtimeConfig.darajaAccountRef.trim().replace(/\s/g, '').substring(0, 12),
@@ -125,7 +124,7 @@ async function triggerSTKPush(phoneNumber, amount) {
       const data = await response.json();
 
       if (data.ResponseCode === "0") {
-          addSystemLog(`Safaricom Accepted: ${data.ResponseDescription}. ID: ${data.CheckoutRequestID}`, 'success');
+          addSystemLog(`Accepted: ${data.ResponseDescription}. ID: ${data.CheckoutRequestID}`, 'success');
           return { success: true, checkoutRequestId: data.CheckoutRequestID, description: data.ResponseDescription };
       }
       
@@ -133,7 +132,7 @@ async function triggerSTKPush(phoneNumber, amount) {
       addSystemLog(failMsg, 'error');
       return { success: false, error: "REJECTION", message: failMsg };
   } catch (error) {
-      addSystemLog(`API Connection Error: ${error.message}`, 'error');
+      addSystemLog(`API Error: ${error.message}`, 'error');
       return { success: false, error: "SYSTEM_ERROR", message: error.message };
   }
 }
@@ -160,7 +159,7 @@ async function queryDarajaStatus(id) {
         });
         const data = await response.json();
         if (data.ResponseCode === "0") {
-            if (data.ResultCode === "0") return { status: 'COMPLETED', message: "Payment Verified" };
+            if (data.ResultCode === "0") return { status: 'COMPLETED', message: "Verified" };
             return { status: 'FAILED', message: data.ResultDesc };
         }
         return { status: 'PENDING', message: data.ResponseDescription || "Awaiting PIN" };
@@ -197,7 +196,7 @@ app.post('/callback/mpesa', (req, res) => {
     const { Body } = req.body;
     if (Body?.stkCallback) {
         const { CheckoutRequestID, ResultCode, ResultDesc } = Body.stkCallback;
-        if(ResultCode === 0) addSystemLog(`SUCCESS: Payment Confirmed for ${CheckoutRequestID}`, 'success');
+        if(ResultCode === 0) addSystemLog(`SUCCESS: Payment Verified for ${CheckoutRequestID}`, 'success');
         else addSystemLog(`CANCELLED: Payment Failed for ${CheckoutRequestID} (${ResultDesc})`, 'error');
     }
     res.sendStatus(200);
@@ -206,4 +205,4 @@ app.post('/callback/mpesa', (req, res) => {
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach AI server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach Engine running on port ${PORT}`));
