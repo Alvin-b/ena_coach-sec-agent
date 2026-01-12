@@ -173,8 +173,6 @@ export class GeminiService {
       { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
     ];
 
-    const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
-
     // 1. Customer Chat Instance
     this.customerChat = this.ai.chats.create({
       model: 'gemini-2.5-flash',
@@ -182,8 +180,10 @@ export class GeminiService {
         safetySettings,
         systemInstruction: `You are Martha, the friendly AI Assistant for Ena Coach. 
   
-        **CURRENT SYSTEM DATE & TIME:** ${now}
-        Always use this date to calculate relative times like "tomorrow" or "next week".
+        **TIME AWARENESS:**
+        You will receive the current date and time in every user message. 
+        You MUST use this provided timestamp to calculate relative dates like "tomorrow", "next week", or "this weekend".
+        Never hallucinate dates in the future beyond what the current context provides.
 
         **Your Role:**
         You assist customers with:
@@ -192,12 +192,7 @@ export class GeminiService {
         3. General Inquiries about Ena Coach services.
         
         **GOLDEN RULE: ASK ONLY ONE QUESTION AT A TIME.**
-        Keep the conversation natural, polite, and helpful. Never overwhelm the user.
-
-        **Flows:**
-        - **Booking**: Route -> Date -> Confirm -> Name -> Phone -> Payment.
-        - **Complaint**: Ask for the issue description -> Ask for incident details -> Log Complaint.
-        - **General**: Answer helpfuly and concisely.
+        Keep the conversation natural, polite, and helpful.
 
         User Name: Customer.
         `,
@@ -213,19 +208,18 @@ export class GeminiService {
         config: {
             safetySettings,
             systemInstruction: `You are an Intelligent Operations Manager Assistant for Ena Coach.
-            **CURRENT SYSTEM DATE & TIME:** ${now}
+            You MUST use the current timestamp provided in messages for all reporting and data analysis.
 
             Your role is to help the admin analyze data, manage the fleet, and make decisions.
             
             CAPABILITIES:
-            1. Financials: Calculate revenue, averages, and ticket sales volume using 'getFinancialReport'.
-            2. Fleet Status: Check occupancy and utilization using 'getOccupancyStats'.
-            3. Manifests: To see who is traveling, use 'getRouteManifest(routeId, date)'.
-            4. Marketing: Draft and send broadcast messages using 'broadcastMessage'.
-            5. Customer Support: Access complaints using 'getComplaints' to summarize issues. Resolve them using 'resolveComplaint(complaintId, message)' which will update the status and notify the customer.
-            6. General Query: Answer questions about routes using 'searchRoutes'.
+            1. Financials: Calculate revenue and stats using 'getFinancialReport'.
+            2. Fleet Status: Check occupancy using 'getOccupancyStats'.
+            3. Manifests: Use 'getRouteManifest(routeId, date)'.
+            4. Marketing: Send broadcasts using 'broadcastMessage'.
+            5. Customer Support: Manage complaints.
             
-            TONE: Professional, concise, data-driven. Use tables or lists for numbers.`,
+            TONE: Professional, concise, data-driven.`,
             tools: [{
                 functionDeclarations: [
                     financialReportTool, 
@@ -253,12 +247,14 @@ export class GeminiService {
       logComplaint: any,
       getBusStatus: any
     },
-    // New Callback for UI Notifications
     onPaymentInitiated?: (phone: string, amount: number) => void
   ): Promise<{ text: string, ticket?: Ticket }> {
     try {
-      const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
-      const contextualMessage = `[CONTEXT: Today is ${now}]\nUser: ${message}`;
+      const now = new Date();
+      const dateString = now.toLocaleDateString('en-KE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Africa/Nairobi' });
+      const timeString = now.toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Nairobi' });
+      
+      const contextualMessage = `[SYSTEM TIME: ${dateString}, ${timeString}]\nUser Message: ${message}`;
 
       let response: GenerateContentResponse = await this.customerChat.sendMessage({ message: contextualMessage });
       let bookedTicket: Ticket | undefined;
@@ -271,12 +267,9 @@ export class GeminiService {
         for (const call of response.functionCalls) {
           const { name, args, id } = call;
           let functionResponse;
-          console.log(`[Gemini Customer] Calling tool: ${name}`, args);
 
-          // Arguments must be cast from unknown/any to their expected types
           if (name === 'searchRoutes') {
             const results = functions.searchRoutes(args.origin as string, args.destination as string);
-            // OPTIMIZATION: Minify payload for AI
             if (Array.isArray(results)) {
                 functionResponse = results.map((r: any) => ({
                     id: r.id,
@@ -309,7 +302,6 @@ export class GeminiService {
                 );
                 if (ticket) {
                     bookedTicket = ticket;
-                    // OPTIMIZATION: Send minimal confirmation to AI, not the full QR code/ticket object
                     functionResponse = { 
                         status: 'success', 
                         message: "Ticket Generated.", 
@@ -359,7 +351,6 @@ export class GeminiService {
 
     } catch (error) {
       console.error("Gemini Customer Error:", error);
-      // Return details to UI if it's a known error type, otherwise generic
       if (error instanceof Error && error.message.includes('API key')) {
         return { text: "Error: API Key is invalid or missing in configuration." };
       }
@@ -383,8 +374,13 @@ export class GeminiService {
     }
   ): Promise<string> {
       try {
-        const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
-        const responsePromise = this.adminChat.sendMessage({ message: `[CONTEXT: Today is ${now}]\nUser: ${message}` });
+        const now = new Date();
+        const dateString = now.toLocaleDateString('en-KE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Africa/Nairobi' });
+        const timeString = now.toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Nairobi' });
+        
+        const contextualMessage = `[SYSTEM TIME: ${dateString}, ${timeString}]\nUser Message: ${message}`;
+        
+        const responsePromise = this.adminChat.sendMessage({ message: contextualMessage });
         let response = await responsePromise;
         let loops = 0;
 
@@ -395,7 +391,6 @@ export class GeminiService {
             for (const call of response.functionCalls) {
                 const { name, args, id } = call;
                 let functionResponse;
-                console.log(`[Gemini Admin] Calling tool: ${name}`, args);
 
                 if (name === 'getFinancialReport') {
                     functionResponse = functions.getFinancialReport(args.startDate as string, args.endDate as string);
@@ -426,7 +421,6 @@ export class GeminiService {
                     functionResponse = await functions.getBusStatus(args.query as string);
                 } else if (name === 'getRouteManifest') {
                     const manifest = await functions.getRouteManifest(args.routeId as string, args.date as string);
-                    // OPTIMIZATION: Reduce manifest details
                     if (manifest && Array.isArray(manifest.passengers)) {
                         functionResponse = {
                             total: manifest.total,

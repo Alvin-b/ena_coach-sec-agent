@@ -207,7 +207,7 @@ const llm = new ChatGoogleGenerativeAI({
 });
 
 const prompt = ChatPromptTemplate.fromMessages([
-  ["system", "You are Martha, the Ena Coach assistant. Today is {current_time}. Customer Name: {user_name}. Flow: 1. Search Route -> 2. Ask for Travel Date -> 3. InitiatePayment -> 4. Confirm Status -> 5. BookTicket."],
+  ["system", "You are Martha, the Ena Coach assistant. CRITICAL: Use the {current_time} provided in the message to determine TODAY's date. Customer Name: {user_name}. Flow: 1. Search Route -> 2. Ask for Travel Date -> 3. InitiatePayment -> 4. Confirm Status -> 5. BookTicket."],
   new MessagesPlaceholder("chat_history"),
   ["human", "{input}"],
   new MessagesPlaceholder("agent_scratchpad"),
@@ -227,12 +227,16 @@ app.post('/webhook', async (req, res) => {
 
   (async () => {
       try {
-         const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
+         const now = new Date();
+         const dateString = now.toLocaleDateString('en-KE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Africa/Nairobi' });
+         const timeString = now.toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Nairobi' });
+         const fullTime = `${dateString}, ${timeString}`;
+
          let history = userSessions.get(remoteJid) || [];
 
          const result = await agentExecutor.invoke({ 
-             input: text, 
-             current_time: now, 
+             input: `[Current Local Time: ${fullTime}]\nUser says: ${text}`, 
+             current_time: fullTime, 
              user_name: data.pushName || 'Customer',
              chat_history: history
          });

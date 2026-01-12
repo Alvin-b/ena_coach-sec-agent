@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useMockBackend } from '../contexts/MockBackendContext';
 import { GeminiService } from '../services/geminiService';
@@ -24,6 +25,14 @@ const CustomerChat: React.FC = () => {
   // Dynamic API Key Loading
   const [dynamicApiKey, setDynamicApiKey] = useState<string>(process.env.API_KEY || '');
   const [isKeyLoading, setIsKeyLoading] = useState<boolean>(!process.env.API_KEY);
+  
+  // Clock state for UI feedback
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -81,7 +90,7 @@ const CustomerChat: React.FC = () => {
         role: 'model',
         text: text,
         timestamp: new Date(),
-        ticket: ticket // Attach the ticket object if booked
+        ticket: ticket 
       };
       setMessages((prev) => [...prev, aiMsg]);
     } catch (error) {
@@ -120,9 +129,6 @@ const CustomerChat: React.FC = () => {
                   <p className="text-gray-600 mb-4 text-sm">
                       The application could not find a valid Google Gemini API Key in the environment.
                   </p>
-                  <p className="text-xs text-gray-500 bg-gray-50 p-3 rounded border border-gray-200">
-                      Please ensure <code>GEMINI_API_KEY</code> is set in your server environment variables (Render/Replit/Local .env).
-                  </p>
               </div>
           </div>
       )
@@ -142,14 +148,13 @@ const CustomerChat: React.FC = () => {
           <i className="fas fa-robot"></i>
         </div>
         <div className="flex-1">
-          <h1 className="font-bold text-lg">Agent Simulator</h1>
-          <p className="text-xs text-gray-400">
-             Internal Testing Environment
-          </p>
+          <h1 className="font-bold text-lg leading-tight">Agent Simulator</h1>
+          <div className="flex items-center text-[10px] text-gray-400 font-mono">
+             <i className="fas fa-clock mr-1"></i>
+             {currentTime.toLocaleDateString('en-KE', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })} | {currentTime.toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' })}
+          </div>
         </div>
         <div className="ml-auto flex items-center space-x-4 relative">
-          
-          {/* Profile / Login Trigger */}
           <div className="relative">
             <button 
                 onClick={() => currentUser ? setShowProfileMenu(!showProfileMenu) : setShowAuthModal(true)}
@@ -158,13 +163,11 @@ const CustomerChat: React.FC = () => {
               <i className={`fas ${currentUser ? 'fa-user' : 'fa-flask'}`}></i>
             </button>
 
-            {/* Dropdown Menu for Logged In User */}
             {showProfileMenu && currentUser && (
                 <div className="absolute right-0 top-10 w-72 bg-white rounded shadow-lg text-gray-800 z-40 overflow-hidden ring-1 ring-black ring-opacity-5">
                     <div className="p-4 border-b bg-gray-50">
                         <p className="font-bold">{currentUser.name}</p>
                         <p className="text-xs text-gray-500">{currentUser.email}</p>
-                        <p className="text-xs text-gray-500">{currentUser.phoneNumber}</p>
                     </div>
                     <div className="max-h-60 overflow-y-auto">
                         <div className="p-2 text-xs font-bold text-gray-500 uppercase bg-gray-50 sticky top-0">My Tickets</div>
@@ -179,9 +182,6 @@ const CustomerChat: React.FC = () => {
                                 >
                                     <div className="flex justify-between items-start">
                                         <span className="font-bold text-sm text-gray-800">{ticket.routeDetails?.destination}</span>
-                                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${ticket.boardingStatus === 'boarded' ? 'bg-gray-200 text-gray-500' : 'bg-green-100 text-green-700'}`}>
-                                            {ticket.boardingStatus === 'boarded' ? 'USED' : 'ACTIVE'}
-                                        </span>
                                     </div>
                                     <div className="flex justify-between mt-1 text-xs text-gray-500">
                                          <span>Seat: {ticket.seatNumber}</span>
@@ -205,8 +205,8 @@ const CustomerChat: React.FC = () => {
       
       {/* Disclaimer Banner */}
       <div className="bg-yellow-100 text-yellow-800 px-4 py-2 text-xs text-center border-b border-yellow-200 font-medium">
-         <i className="fas fa-info-circle mr-1"></i> 
-         This is a simulation. Live customer interactions occur via WhatsApp.
+         <i className="fas fa-calendar-check mr-1"></i> 
+         Agent is synced to: {currentTime.toLocaleDateString()}
       </div>
 
       {/* Chat Area */}
@@ -223,7 +223,7 @@ const CustomerChat: React.FC = () => {
             <div
               className={`max-w-[85%] md:max-w-[70%] p-3 rounded-lg shadow-sm relative text-sm md:text-base ${
                 msg.role === 'user'
-                  ? 'bg-blue-600 text-white rounded-tr-none' // Changed from WhatsApp green to Blue
+                  ? 'bg-blue-600 text-white rounded-tr-none' 
                   : msg.role === 'system' 
                     ? 'bg-red-100 text-red-800'
                     : 'bg-gray-100 text-gray-800 rounded-tl-none border border-gray-200'
@@ -231,26 +231,23 @@ const CustomerChat: React.FC = () => {
             >
               <p className="whitespace-pre-wrap">{msg.text}</p>
               
-              {/* Premium Ticket Bubble inside Chat */}
               {msg.ticket && (
                 <div className="mt-3 bg-white border border-gray-200 rounded-lg p-3 shadow-sm text-gray-800">
                   <div className="flex items-center space-x-3 mb-2">
                     <div className="bg-red-600 text-white w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs">EC</div>
                     <div>
                       <h3 className="font-bold text-gray-800 text-xs uppercase tracking-wide">Ena Coach Ticket</h3>
-                      <p className="text-[10px] text-gray-500">{msg.ticket.id}</p>
                     </div>
                   </div>
                   <div className="text-xs text-gray-700 mb-2 space-y-1">
                     <p><strong>To:</strong> {msg.ticket.routeDetails?.destination}</p>
-                    <p><strong>Departs:</strong> {msg.ticket.routeDetails?.departureTime}</p>
                     <p><strong>Seat:</strong> <span className="text-red-600 font-bold text-sm">{msg.ticket.seatNumber}</span></p>
                   </div>
                   <button 
                     onClick={() => setSelectedTicket(msg.ticket!)}
-                    className="w-full bg-red-600 text-white py-1.5 rounded text-xs font-bold hover:bg-red-700 transition flex items-center justify-center"
+                    className="w-full bg-red-600 text-white py-1.5 rounded text-xs font-bold hover:bg-red-700 transition"
                   >
-                    <i className="fas fa-eye mr-2"></i> View & Download Ticket
+                    View Ticket
                   </button>
                 </div>
               )}
@@ -290,18 +287,13 @@ const CustomerChat: React.FC = () => {
             disabled={isLoading}
           />
         </div>
-        {input.trim() ? (
-           <button 
-             onClick={handleSend}
-             className="p-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition shadow-md"
-           >
-             <i className="fas fa-paper-plane"></i>
-           </button>
-        ) : (
-          <button className="p-3 bg-gray-300 text-white rounded-lg cursor-default">
-            <i className="fas fa-paper-plane"></i>
-          </button>
-        )}
+        <button 
+          onClick={handleSend}
+          disabled={!input.trim() || isLoading}
+          className={`p-3 rounded-lg transition shadow-md ${input.trim() ? 'bg-blue-600 text-white' : 'bg-gray-300 text-white'}`}
+        >
+          <i className="fas fa-paper-plane"></i>
+        </button>
       </div>
     </div>
   );
