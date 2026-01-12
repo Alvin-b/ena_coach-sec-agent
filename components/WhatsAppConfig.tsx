@@ -120,7 +120,7 @@ const WhatsAppConfig: React.FC = () => {
               setCurrentAlert({ msg: data.message, timestamp: Date.now() });
           }
       } catch (e) {
-          setCurrentAlert({ msg: "Server Connection Error.", timestamp: Date.now() });
+          setCurrentAlert({ msg: "Connection lost. Please check server.", timestamp: Date.now() });
       } finally {
           setIsTestingPayment(false);
           fetchLogsAndAlerts();
@@ -142,38 +142,40 @@ const WhatsAppConfig: React.FC = () => {
   return (
     <div className="space-y-8 pb-20 relative">
       
-      {/* Transaction Alert Prompt */}
+      {/* Alert Overlay */}
       {currentAlert && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-fade-in">
               <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md overflow-hidden border-4 border-red-500">
                   <div className="bg-red-500 p-8 text-white text-center">
-                      <i className="fas fa-exclamation-circle text-7xl mb-4"></i>
-                      <h2 className="text-2xl font-black uppercase tracking-widest">Transaction Alert</h2>
+                      <i className="fas fa-exclamation-triangle text-7xl mb-4"></i>
+                      <h2 className="text-2xl font-black uppercase tracking-widest">Setup Issue</h2>
                   </div>
                   <div className="p-8">
-                      <div className="bg-red-50 p-6 rounded-2xl border border-red-100 mb-6">
-                        <p className="text-red-900 font-bold text-center text-sm leading-relaxed">
+                      <div className="bg-red-50 p-6 rounded-2xl border border-red-100 mb-6 text-center">
+                        <p className="text-red-900 font-bold text-sm leading-relaxed">
                             {currentAlert.msg}
                         </p>
                       </div>
-                      
+                      <p className="text-gray-500 text-[10px] mb-6 text-center italic">
+                        Tip: If logs say "Accepted" but phone doesn't ring, ensure "Till Number" is correct.
+                      </p>
                       <button 
                         onClick={() => setCurrentAlert(null)}
-                        className="w-full py-5 bg-gray-950 text-white font-black rounded-2xl hover:bg-black transition uppercase tracking-widest text-xs"
+                        className="w-full py-5 bg-red-600 text-white font-black rounded-2xl hover:bg-red-700 transition shadow-lg active:scale-95 uppercase tracking-widest text-xs"
                       >
-                        Dismiss
+                        Got it
                       </button>
                   </div>
               </div>
           </div>
       )}
 
-      {/* Real-time System Monitor Terminal */}
+      {/* Terminal Display */}
       <div className="bg-[#0b0b0e] rounded-[2.5rem] p-8 h-96 flex flex-col border border-gray-800 shadow-2xl font-mono overflow-hidden">
           <div className="flex justify-between items-center mb-6">
             <div className="flex items-center gap-4">
                 <span className="w-3 h-3 rounded-full bg-green-500 animate-pulse shadow-[0_0_10px_rgba(34,197,94,0.8)]"></span>
-                <p className="text-blue-400 text-xs uppercase tracking-[0.3em] font-black">Production Engine Traffic</p>
+                <p className="text-blue-400 text-xs uppercase tracking-[0.3em] font-black">Live Production Traffic</p>
             </div>
             {lastCheckoutId && (
                 <button 
@@ -186,7 +188,7 @@ const WhatsAppConfig: React.FC = () => {
           </div>
           <div className="flex-1 overflow-y-auto text-[11px] leading-relaxed space-y-4 scrollbar-hide flex flex-col-reverse">
               <div ref={terminalEndRef} />
-              {terminalLogs.length === 0 ? <p className="text-gray-700 italic text-center py-20"># Active Listeners Standing By...</p> : terminalLogs.map((log: any, i) => (
+              {terminalLogs.length === 0 ? <p className="text-gray-700 italic text-center py-20"># Standing by for Daraja events...</p> : terminalLogs.map((log: any, i) => (
                   <div key={i} className={`p-4 rounded-xl border transition-all ${
                     log.type === 'error' ? 'bg-red-950/20 text-red-400 border-red-900/30' : 
                     log.type === 'success' ? 'bg-green-950/20 text-green-400 border-green-900/30' : 
@@ -203,12 +205,12 @@ const WhatsAppConfig: React.FC = () => {
           </div>
       </div>
 
-      {/* Configuration Hub */}
+      {/* Config Hub */}
       <div className="bg-white rounded-[3rem] shadow-2xl border border-gray-100 overflow-hidden">
         <div className="bg-gray-50 p-10 border-b border-gray-200 flex flex-col xl:flex-row justify-between items-center gap-8">
             <div className="text-center xl:text-left">
-                <h2 className="text-3xl font-black text-gray-950 tracking-tight">Daraja Engine Hub</h2>
-                <p className="text-sm text-gray-500 mt-2 font-medium">Verified Passkey for Till: <span className="text-red-600 font-black">{darajaShortcode}</span></p>
+                <h2 className="text-3xl font-black text-gray-950 tracking-tight tracking-widest uppercase">Daraja Engine</h2>
+                <p className="text-sm text-gray-500 mt-2 font-medium">Shortcode: <span className="text-red-600 font-black">{darajaShortcode}</span></p>
             </div>
             <div className="flex bg-gray-200 p-2 rounded-2xl shadow-inner">
                 <div className="flex bg-white rounded-xl shadow-sm p-1">
@@ -218,21 +220,21 @@ const WhatsAppConfig: React.FC = () => {
             </div>
         </div>
 
-        <div className="p-10 space-y-16">
+        <div className="p-10 space-y-12">
             
             {/* Payment Diagnostic */}
             <section className="bg-red-50/50 p-10 rounded-[2.5rem] border-2 border-dashed border-red-100">
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-10">
                     <div className="max-w-md">
-                        <h3 className="text-xl font-black text-red-900 flex items-center"><i className="fas fa-play-circle mr-3 text-red-600"></i> Trigger Production Test</h3>
-                        <p className="text-sm text-red-700/70 font-bold mt-2 leading-relaxed">Send a KES 1 prompt to your phone to confirm the production credentials are correct.</p>
+                        <h3 className="text-xl font-black text-red-900 flex items-center"><i className="fas fa-satellite-dish mr-3 text-red-600"></i> Trigger Handshake</h3>
+                        <p className="text-sm text-red-700/70 font-bold mt-2 leading-relaxed">Send a live prompt to your phone. If it doesn't appear, your <b>Till Number</b> (PartyB) doesn't match your <b>Store Number</b>.</p>
                     </div>
                     <div className="flex-1 flex flex-col sm:flex-row gap-4">
                         <input 
                             type="text" 
                             value={testPhone} 
                             onChange={e => setTestPhone(e.target.value)} 
-                            className="flex-1 bg-white border-2 border-red-100 p-5 rounded-2xl text-lg font-black text-gray-900 focus:border-red-600 transition-all outline-none"
+                            className="flex-1 bg-white border-2 border-red-100 p-5 rounded-2xl text-lg font-black text-gray-900 focus:border-red-600 outline-none"
                             placeholder="Phone (254...)"
                         />
                         <button 
@@ -241,7 +243,7 @@ const WhatsAppConfig: React.FC = () => {
                             className="bg-gray-950 text-white px-12 py-5 rounded-2xl font-black text-xs hover:bg-black transition-all shadow-xl active:scale-95 flex items-center justify-center gap-3"
                         >
                             {isTestingPayment ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-paper-plane"></i>}
-                            PUSH TEST PROMPT
+                            PUSH TEST
                         </button>
                     </div>
                 </div>
@@ -250,29 +252,29 @@ const WhatsAppConfig: React.FC = () => {
             {/* Credential Grid */}
             <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
                 <div className="space-y-3">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Store Number (Shortcode)</label>
-                    <input type="text" value={darajaShortcode} onChange={e => setDarajaShortcode(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-black text-red-600 outline-none" />
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Store Number (BusinessShortCode)</label>
+                    <input type="text" value={darajaShortcode} onChange={e => setDarajaShortcode(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-black text-red-600 outline-none" placeholder="e.g. 5512238" />
                 </div>
                 <div className="space-y-3">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Till Number (PartyB)</label>
-                    <input type="text" value={darajaStoreNumber} onChange={e => setDarajaStoreNumber(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-black text-gray-800 outline-none" placeholder="Enter Till Number" />
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Actual Till Number (PartyB)</label>
+                    <input type="text" value={darajaStoreNumber} onChange={e => setDarajaStoreNumber(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-black text-gray-800 outline-none" placeholder="Enter 6-7 digit Till Number" />
                 </div>
                 <div className="space-y-3">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Production Passkey (Verified)</label>
-                    <input type="password" value={darajaPasskey} onChange={e => setDarajaPasskey(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-xs font-mono outline-none" placeholder="Enter Production Passkey" />
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Verified Production Passkey</label>
+                    <input type="password" value={darajaPasskey} onChange={e => setDarajaPasskey(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-xs font-mono outline-none" />
                 </div>
                 <div className="lg:col-span-3 space-y-3">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Consumer Key</label>
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Consumer Key (Live)</label>
                     <input type="text" value={darajaKey} onChange={e => setDarajaKey(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-xs font-mono outline-none" />
                 </div>
                 <div className="lg:col-span-3 space-y-3">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Consumer Secret</label>
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Consumer Secret (Live)</label>
                     <input type="password" value={darajaSecret} onChange={e => setDarajaSecret(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-xs font-mono outline-none" />
                 </div>
             </section>
 
             <button onClick={handleSaveAndSync} className="w-full py-8 bg-red-600 text-white font-black rounded-3xl hover:bg-red-700 shadow-2xl transition-all transform active:scale-95 uppercase tracking-[0.4em] text-sm">
-                Apply & Save Settings
+                Synchronize Engine Credentials
             </button>
         </div>
       </div>
