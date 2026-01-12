@@ -8,14 +8,7 @@ import TicketCard from './TicketCard';
 
 const CustomerChat: React.FC = () => {
   const { searchRoutes, bookTicket, initiatePayment, verifyPayment, logComplaint, getBusStatus, currentUser, logout, getUserTickets } = useMockBackend();
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome',
-      role: 'model',
-      text: 'Hello! I am Martha, your Ena Coach assistant. I can help you find buses, track locations, book seats, and handle complaints. How can I assist you today?',
-      timestamp: new Date()
-    }
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
@@ -206,6 +199,12 @@ const CustomerChat: React.FC = () => {
         onClick={() => setShowProfileMenu(false)}
         className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#f8f9fa]"
       >
+        {messages.length === 0 && (
+          <div className="h-full flex flex-col items-center justify-center opacity-40 py-20 pointer-events-none">
+            <i className="fas fa-comments text-6xl mb-4 text-gray-300"></i>
+            <p className="font-bold text-sm uppercase tracking-widest text-gray-400">Waiting for user message...</p>
+          </div>
+        )}
         {messages.map((msg) => (
           <div
             key={msg.id}

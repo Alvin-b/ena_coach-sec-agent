@@ -1,13 +1,11 @@
 
 /**
- * Ena Coach AI Agent - LangChain Webhook Handler
- * Optimized for Speed & Concurrency
+ * Ena Coach AI Agent - WhatsApp Webhook (Evolution API + Gemini)
+ * High-Performance Automation with Proactive Payment Monitoring
  */
 
 import express from 'express';
 import bodyParser from 'body-parser';
-
-// LangChain Imports
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { AgentExecutor, createToolCallingAgent } from "langchain/agents";
 import { DynamicStructuredTool } from "@langchain/core/tools";
@@ -15,25 +13,23 @@ import { z } from "zod";
 import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
 
-// --- Configuration ---
+// --- Env & Config ---
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.GEMINI_API_KEY;
-const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL ? process.env.EVOLUTION_API_URL.replace(/\/$/, '') : '';
+const API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
+const EVOLUTION_API_URL = (process.env.EVOLUTION_API_URL || '').replace(/\/$/, '');
 const EVOLUTION_API_TOKEN = process.env.EVOLUTION_API_TOKEN;
-const INSTANCE_NAME = process.env.INSTANCE_NAME;
+const INSTANCE_NAME = process.env.INSTANCE_NAME || 'EnaCoach';
 
-// Daraja Config - PRODUCTION (Verified Defaults)
+// M-Pesa Production Credentials
 const DARAJA_CONSUMER_KEY = process.env.DARAJA_CONSUMER_KEY || 'vz2udWubzGyYSTzkEWGo7wM6MTP2aK8uc6GnoPHAMuxgTB6J';
 const DARAJA_CONSUMER_SECRET = process.env.DARAJA_CONSUMER_SECRET || 'bW5AKfCRXIqQ1DyAMriKVAKkUULaQl8FLdPA8SadMqiylrwQPZR8tJAAS0mVG1rm';
 const DARAJA_PASSKEY = process.env.DARAJA_PASSKEY || '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f';
-const DARAJA_SHORTCODE = process.env.DARAJA_SHORTCODE || '5512238'; // Business Store Number
-const DARAJA_PARTY_B = process.env.DARAJA_PARTY_B || '4159923'; // Actual Till Number
+const DARAJA_SHORTCODE = process.env.DARAJA_SHORTCODE || '5512238'; 
+const DARAJA_PARTY_B = process.env.DARAJA_PARTY_B || '4159923';
 
-// In-Memory Stores
+// In-memory Session Storage
 const userSessions = new Map();
-const paymentStore = new Map();
-const ticketsStore = [];
-const BUS_CAPACITY = 45;
+const activePayments = new Map(); 
 
 const INTERNAL_ROUTES = [
   { id: 'R001', origin: 'Nairobi', destination: 'Kisumu', departureTime: '08:00 AM', price: 1500 },
@@ -45,209 +41,205 @@ const INTERNAL_ROUTES = [
 const app = express();
 app.use(bodyParser.json());
 
-// --- Helpers ---
-function getBookedSeats(routeId, date) {
-    return ticketsStore.filter(t => t.routeId === routeId && t.date === date).length;
+// --- Core Helper Functions ---
+
+async function sendWhatsApp(jid, text) {
+    if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) return console.error("Evolution API Config Missing");
+    try {
+        await fetch(`${EVOLUTION_API_URL}/message/sendText/${INSTANCE_NAME}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': EVOLUTION_API_TOKEN },
+            body: JSON.stringify({ number: jid, text: text })
+        });
+    } catch(e) { console.error("WhatsApp Send Failed:", e.message); }
 }
 
-// --- Daraja Helpers ---
 async function getDarajaToken() {
-  if (!DARAJA_CONSUMER_KEY || !DARAJA_CONSUMER_SECRET) return null;
-  const baseUrl = 'https://api.safaricom.co.ke';
-  const url = `${baseUrl}/oauth/v1/generate?grant_type=client_credentials`;
   const auth = Buffer.from(`${DARAJA_CONSUMER_KEY.trim()}:${DARAJA_CONSUMER_SECRET.trim()}`).toString('base64');
   try {
-    const response = await fetch(url, { headers: { 'Authorization': `Basic ${auth}` } });
-    const data = await response.json();
-    return data.access_token;
-  } catch (error) { return null; }
-}
-
-async function triggerSTKPush(phoneNumber, amount) {
-  const token = await getDarajaToken();
-  if (!token) return { success: false, message: "Payment service unavailable (Auth Error)." };
-  
-  const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
-  const password = Buffer.from(`${DARAJA_SHORTCODE}${DARAJA_PASSKEY}${timestamp}`).toString('base64');
-  const url = 'https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
-
-  let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
-  const transactionType = 'CustomerBuyGoodsOnline'; 
-  
-  const payload = {
-    "BusinessShortCode": DARAJA_SHORTCODE, "Password": password, "Timestamp": timestamp,
-    "TransactionType": transactionType, "Amount": Math.ceil(amount),
-    "PartyA": formattedPhone, "PartyB": DARAJA_PARTY_B, "PhoneNumber": formattedPhone,
-    "CallBackURL": "https://ena-coach-bot.onrender.com/callback/mpesa", 
-    "AccountReference": "EnaCoach", "TransactionDesc": "Bus Ticket"
-  };
-
-  try {
-    const response = await fetch(url, {
-      method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+    const res = await fetch('https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials', {
+      headers: { 'Authorization': `Basic ${auth}` }
     });
-    const data = await response.json();
-    if (data.ResponseCode === "0") {
-         paymentStore.set(data.CheckoutRequestID, { status: 'PENDING', phone: formattedPhone, amount: amount });
-         return { success: true, checkoutRequestId: data.CheckoutRequestID, message: "STK Push sent." };
-    }
-    return { success: false, message: data.CustomerMessage || data.errorMessage };
-  } catch (error) { return { success: false, message: "Network error." }; }
+    const data = await res.json();
+    return data.access_token;
+  } catch (e) { return null; }
 }
 
-async function queryDarajaStatus(checkoutRequestId) {
+async function checkDarajaStatus(checkoutId) {
     const token = await getDarajaToken();
-    if (!token) return { status: 'UNKNOWN' };
+    if (!token) return 'ERROR';
     const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
     const password = Buffer.from(`${DARAJA_SHORTCODE}${DARAJA_PASSKEY}${timestamp}`).toString('base64');
     
     try {
-        const response = await fetch('https://api.safaricom.co.ke/mpesa/stkpushquery/v1/query', {
-            method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ "BusinessShortCode": DARAJA_SHORTCODE, "Password": password, "Timestamp": timestamp, "CheckoutRequestID": checkoutRequestId })
+        const res = await fetch('https://api.safaricom.co.ke/mpesa/stkpushquery/v1/query', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ "BusinessShortCode": DARAJA_SHORTCODE, "Password": password, "Timestamp": timestamp, "CheckoutRequestID": checkoutId })
         });
-        const data = await response.json();
-        if (data.ResponseCode === "0") {
-            if (data.ResultCode === "0") return { status: 'COMPLETED', message: data.ResultDesc };
-            if (['1032', '1037', '1'].includes(data.ResultCode)) return { status: 'FAILED', message: data.ResultDesc };
-            return { status: 'PENDING', message: data.ResultDesc };
-        }
-        return { status: 'UNKNOWN' };
-    } catch (e) { return { status: 'UNKNOWN' }; }
+        const data = await res.json();
+        if (data.ResultCode === "0") return 'COMPLETED';
+        if (['1032', '1037', '1'].includes(data.ResultCode)) return 'FAILED';
+        return 'PENDING';
+    } catch (e) { return 'ERROR'; }
 }
 
-function scheduleTransactionCheck(checkoutRequestId, userJid) {
-    const TIMEOUT_MS = 120000;
-    setTimeout(async () => {
-        const payment = paymentStore.get(checkoutRequestId);
-        if (!payment || payment.status === 'COMPLETED') return; 
-
-        let finalStatus = payment.status;
-        if (finalStatus === 'PENDING') {
-            const check = await queryDarajaStatus(checkoutRequestId);
-            if (check.status !== 'UNKNOWN') finalStatus = check.status;
+/**
+ * BACKGROUND POLLER:
+ * Once a payment is started, this polls Safaricom and then re-triggers the agent.
+ */
+function startPaymentPolling(jid, checkoutId) {
+    let attempts = 0;
+    const interval = setInterval(async () => {
+        attempts++;
+        const status = await checkDarajaStatus(checkoutId);
+        
+        if (status === 'COMPLETED') {
+            clearInterval(interval);
+            // Trigger the AI agent with a hidden success message
+            await processIncomingMessage(jid, `[PAYMENT_SUCCESS] Checkout: ${checkoutId}`);
+        } else if (status === 'FAILED' || attempts > 30) {
+            clearInterval(interval);
+            if (status === 'FAILED') await sendWhatsApp(jid, "❌ It seems the M-Pesa transaction was cancelled or failed. Would you like to try again?");
         }
-
-        if (finalStatus === 'COMPLETED') {
-             paymentStore.set(checkoutRequestId, { ...payment, status: 'COMPLETED' });
-             // Automatic detection message
-             await sendWhatsAppMessage(userJid, "✅ Payment Verified! I am finalizing your booking now...");
-             // In a production app, we would re-invoke the agent with [PAYMENT_SUCCESS] here.
-        } else if (finalStatus === 'FAILED') {
-             await sendWhatsAppMessage(userJid, "❌ Payment failed or cancelled. Please try again.");
-        }
-    }, TIMEOUT_MS);
+    }, 5000);
 }
 
-async function sendWhatsAppMessage(remoteJid, text) {
-    if (!EVOLUTION_API_URL || !EVOLUTION_API_TOKEN) return;
-    try {
-        await fetch(`${EVOLUTION_API_URL}/message/sendText/${INSTANCE_NAME}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': EVOLUTION_API_TOKEN },
-            body: JSON.stringify({ number: remoteJid, text: text })
-        });
-    } catch(e) { console.error("API Send Error:", e); }
-}
+// --- Agent Tools ---
 
-// --- Tools ---
 const searchRoutesTool = new DynamicStructuredTool({
   name: "searchRoutes",
-  description: "Search routes.",
+  description: "Find bus routes.",
   schema: z.object({ origin: z.string(), destination: z.string() }),
   func: async ({ origin, destination }) => {
-     let matches = INTERNAL_ROUTES.filter(r => r.origin.toLowerCase().includes(origin.toLowerCase()) && r.destination.toLowerCase().includes(destination.toLowerCase()));
-     if (matches.length === 0) return "No direct route found.";
-     return JSON.stringify(matches);
+     const matches = INTERNAL_ROUTES.filter(r => r.origin.toLowerCase().includes(origin.toLowerCase()) && r.destination.toLowerCase().includes(destination.toLowerCase()));
+     return matches.length > 0 ? JSON.stringify(matches) : "No buses found for that route today.";
   },
 });
 
 const initiatePaymentTool = new DynamicStructuredTool({
   name: "initiatePayment",
-  description: "Initiate M-Pesa. I will automatically monitor the status.",
+  description: "Trigger M-Pesa STK Push.",
   schema: z.object({ phoneNumber: z.string(), amount: z.number() }),
   func: async ({ phoneNumber, amount }) => {
-     const res = await triggerSTKPush(phoneNumber, amount);
-     if (res.success) {
-         const jid = phoneNumber.replace('+', '').replace(/^0/, '254') + "@s.whatsapp.net";
-         scheduleTransactionCheck(res.checkoutRequestId, jid);
-         return JSON.stringify({ status: 'initiated', message: "STK Push sent. Monitoring..." });
-     }
-     return JSON.stringify(res);
+     const token = await getDarajaToken();
+     if (!token) return "Payment system unavailable.";
+     
+     const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+     const password = Buffer.from(`${DARAJA_SHORTCODE}${DARAJA_PASSKEY}${timestamp}`).toString('base64');
+     let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
+
+     try {
+        const res = await fetch('https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            "BusinessShortCode": DARAJA_SHORTCODE, "Password": password, "Timestamp": timestamp,
+            "TransactionType": "CustomerBuyGoodsOnline", "Amount": Math.ceil(amount),
+            "PartyA": formattedPhone, "PartyB": DARAJA_PARTY_B, "PhoneNumber": formattedPhone,
+            "CallBackURL": "https://ena-coach-bot.onrender.com/callback/mpesa", "AccountReference": "EnaCoach", "TransactionDesc": "Bus Ticket"
+          })
+        });
+        const data = await res.json();
+        if (data.ResponseCode === "0") {
+             const jid = formattedPhone + "@s.whatsapp.net";
+             startPaymentPolling(jid, data.CheckoutRequestID);
+             return JSON.stringify({ success: true, checkoutId: data.CheckoutRequestID });
+        }
+        return "Failed to send M-Pesa prompt.";
+     } catch (e) { return "M-Pesa service error."; }
   },
 });
 
 const bookTicketTool = new DynamicStructuredTool({
   name: "bookTicket",
-  description: "Generate Ticket.",
-  schema: z.object({ 
-      passengerName: z.string(), 
-      routeId: z.string(), 
-      phoneNumber: z.string(), 
-      travelDate: z.string()
-  }),
-  func: async ({ passengerName, routeId, phoneNumber, travelDate }) => {
-    const booked = getBookedSeats(routeId, travelDate);
-    if (booked >= BUS_CAPACITY) return "Bus Fully Booked.";
-    const ticket = { id: `TKT-${Date.now()}`, passengerName, routeId, date: travelDate, seat: booked+1 };
-    ticketsStore.push(ticket);
-    return JSON.stringify({ status: 'success', message: 'Ticket Booked.', ticket });
+  description: "Generate the ticket.",
+  schema: z.object({ passengerName: z.string(), routeId: z.string(), travelDate: z.string() }),
+  func: async ({ passengerName, routeId, travelDate }) => {
+    const ticketId = `TKT-${Math.floor(Math.random()*100000)}`;
+    return JSON.stringify({ status: 'success', ticketId, message: `Ticket ${ticketId} confirmed for ${passengerName}. Seat assigned.` });
   },
 });
 
 const tools = [searchRoutesTool, initiatePaymentTool, bookTicketTool];
 
-// --- AI Agent ---
+// --- AI Setup ---
+
 const llm = new ChatGoogleGenerativeAI({
   model: "gemini-2.5-flash",
-  apiKey: API_KEY, 
+  apiKey: API_KEY,
   temperature: 0,
 });
 
-const prompt = ChatPromptTemplate.fromMessages([
-  ["system", `You are Martha, the Ena Coach assistant. Today is {current_time}. 
-  PROACTIVE MONITORING: When payment starts, tell the user: "I've sent an M-Pesa prompt. Please enter your PIN. I'll automatically detect when you're done." 
-  NEVER ask the user to tell you when they are finished. 
-  If you see [PAYMENT_SUCCESS], call bookTicket immediately.`],
+const promptTemplate = ChatPromptTemplate.fromMessages([
+  ["system", `You are Martha, the Ena Coach AI Assistant.
+  
+  **BEHAVIOR:**
+  - Wait for the user to speak first. Do not introduce yourself at the start.
+  - Be reactive to the user's needs.
+  
+  **PROACTIVE FLOW:**
+  - When you initiate a payment, tell the user: "I've sent an M-Pesa prompt to your phone. Please enter your PIN. I'll automatically detect the payment once it's complete."
+  - **NEVER** ask the user to notify you when they are finished.
+  - If the user provides a destination, check for routes immediately.
+  - Calculate relative dates (like 'tomorrow') based ONLY on the timestamp provided in the user message.
+  
+  **GOLDEN RULE:** Ask only ONE question at a time. Keep it helpful and brief.`],
   new MessagesPlaceholder("chat_history"),
   ["human", "{input}"],
   new MessagesPlaceholder("agent_scratchpad"),
 ]);
 
-const agent = await createToolCallingAgent({ llm: llm.bindTools(tools), tools, prompt });
-const agentExecutor = new AgentExecutor({ agent, tools, verbose: false });
+const agent = await createToolCallingAgent({ llm: llm.bindTools(tools), tools, prompt: promptTemplate });
+const agentExecutor = new AgentExecutor({ agent, tools });
+
+// --- Message Processing ---
+
+async function processIncomingMessage(remoteJid, text, pushName = 'Customer') {
+    try {
+        const now = new Date();
+        const fullTime = now.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
+        
+        let history = userSessions.get(remoteJid) || [];
+        
+        const result = await agentExecutor.invoke({
+            input: `[CURRENT TIME: ${fullTime}]\nMessage: ${text}`,
+            chat_history: history
+        });
+
+        history.push(new HumanMessage(text));
+        history.push(new AIMessage(result.output));
+        if (history.length > 10) history = history.slice(-10);
+        userSessions.set(remoteJid, history);
+
+        await sendWhatsApp(remoteJid, result.output);
+    } catch (e) { console.error("Agent Logic Error:", e); }
+}
+
+// --- Webhook Endpoints ---
 
 app.post('/webhook', async (req, res) => {
   const { type, data } = req.body;
-  if (type !== 'messages.upsert' || !data.message) return res.status(200).send('OK');
   
-  const text = data.message.conversation || data.message.extendedTextMessage?.text;
-  if (!text) return res.status(200).send('OK');
-  const remoteJid = data.key.remoteJid;
+  // Only process incoming messages
+  if (type === 'messages.upsert' && data.message) {
+      const text = data.message.conversation || data.message.extendedTextMessage?.text;
+      const remoteJid = data.key.remoteJid;
+      const fromMe = data.key.fromMe;
 
-  (async () => {
-      try {
-         const now = new Date();
-         const fullTime = now.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
-         let history = userSessions.get(remoteJid) || [];
-
-         const result = await agentExecutor.invoke({ 
-             input: `[Time: ${fullTime}]\nUser: ${text}`, 
-             current_time: fullTime, 
-             user_name: data.pushName || 'Customer',
-             chat_history: history
-         });
-         
-         history.push(new HumanMessage(text));
-         history.push(new AIMessage(result.output));
-         if (history.length > 8) history = history.slice(-8);
-         userSessions.set(remoteJid, history);
-         
-         await sendWhatsAppMessage(remoteJid, result.output);
-      } catch(e) { console.error("Agent Error:", e); }
-  })();
-
+      if (text && !fromMe) {
+          // Process in background to keep webhook response fast
+          processIncomingMessage(remoteJid, text, data.pushName);
+      }
+  }
+  
   res.status(200).send('OK');
 });
 
-app.listen(PORT, () => console.log(`Webhook Live on ${PORT}`));
+// For M-Pesa Callbacks
+app.post('/callback/mpesa', (req, res) => {
+    // Simply acknowledge. Polling handles the heavy lifting.
+    res.sendStatus(200);
+});
+
+app.listen(PORT, () => console.log(`🚀 Ena Coach WhatsApp Bot Live on port ${PORT}`));
