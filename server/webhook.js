@@ -21,11 +21,12 @@ const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL ? process.env.EVOLUTION_
 const EVOLUTION_API_TOKEN = process.env.EVOLUTION_API_TOKEN;
 const INSTANCE_NAME = process.env.INSTANCE_NAME;
 
-// Daraja Config
-const DARAJA_CONSUMER_KEY = process.env.DARAJA_CONSUMER_KEY || 'A9QGd46yfsnrgM027yIGE0UDiUroPZdHr8CiTRs8NGTFaXH8';
-const DARAJA_CONSUMER_SECRET = process.env.DARAJA_CONSUMER_SECRET || 'IFZQQkXptDOUkGx6wZGEeiLADggUy39NUJzEPzhU1EytUBg5JmA3oR3OGvRC6wsb';
+// Daraja Config - PRODUCTION (Verified)
+const DARAJA_CONSUMER_KEY = process.env.DARAJA_CONSUMER_KEY || 'vz2udWubzGyYSTzkEWGo7wM6MTP2aK8uc6GnoPHAMuxgTB6J';
+const DARAJA_CONSUMER_SECRET = process.env.DARAJA_CONSUMER_SECRET || 'bW5AKfCRXIqQ1DyAMriKVAKkUULaQl8FLdPA8SadMqiylrwQPZR8tJAAS0mVG1rm';
 const DARAJA_PASSKEY = process.env.DARAJA_PASSKEY || '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f';
-const DARAJA_SHORTCODE = process.env.DARAJA_SHORTCODE || '4159923'; // Till Number
+const DARAJA_SHORTCODE = process.env.DARAJA_SHORTCODE || '5512238'; // Business Store Number
+const DARAJA_PARTY_B = process.env.DARAJA_PARTY_B || '4159923'; // Actual Till Number
 
 // In-Memory Stores
 const userSessions = new Map();
@@ -51,7 +52,8 @@ function getBookedSeats(routeId, date) {
 // --- Daraja Helpers ---
 async function getDarajaToken() {
   if (!DARAJA_CONSUMER_KEY || !DARAJA_CONSUMER_SECRET) return null;
-  const url = 'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials';
+  const baseUrl = 'https://api.safaricom.co.ke';
+  const url = `${baseUrl}/oauth/v1/generate?grant_type=client_credentials`;
   const auth = Buffer.from(`${DARAJA_CONSUMER_KEY}:${DARAJA_CONSUMER_SECRET}`).toString('base64');
   try {
     const response = await fetch(url, { headers: { 'Authorization': `Basic ${auth}` } });
@@ -66,16 +68,16 @@ async function triggerSTKPush(phoneNumber, amount) {
   
   const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
   const password = Buffer.from(`${DARAJA_SHORTCODE}${DARAJA_PASSKEY}${timestamp}`).toString('base64');
-  const url = 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
+  const url = 'https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
 
   let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
-  const transactionType = DARAJA_SHORTCODE === '4159923' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline';
+  const transactionType = 'CustomerBuyGoodsOnline';
   
   const payload = {
     "BusinessShortCode": DARAJA_SHORTCODE, "Password": password, "Timestamp": timestamp,
     "TransactionType": transactionType, "Amount": Math.ceil(amount),
-    "PartyA": formattedPhone, "PartyB": DARAJA_SHORTCODE, "PhoneNumber": formattedPhone,
-    "CallBackURL": "https://example.com/callback", "AccountReference": "EnaCoach", "TransactionDesc": "Bus Ticket"
+    "PartyA": formattedPhone, "PartyB": DARAJA_PARTY_B, "PhoneNumber": formattedPhone,
+    "CallBackURL": "https://ena-coach-bot.onrender.com/callback/mpesa", "AccountReference": "EnaCoach", "TransactionDesc": "Bus Ticket"
   };
 
   try {
@@ -99,7 +101,7 @@ async function queryDarajaStatus(checkoutRequestId) {
     const password = Buffer.from(`${DARAJA_SHORTCODE}${DARAJA_PASSKEY}${timestamp}`).toString('base64');
     
     try {
-        const response = await fetch('https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query', {
+        const response = await fetch('https://api.safaricom.co.ke/mpesa/stkpushquery/v1/query', {
             method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ "BusinessShortCode": DARAJA_SHORTCODE, "Password": password, "Timestamp": timestamp, "CheckoutRequestID": checkoutRequestId })
         });
@@ -204,7 +206,7 @@ const llm = new ChatGoogleGenerativeAI({
 });
 
 const prompt = ChatPromptTemplate.fromMessages([
-  ["system", "You are Ena Coach. TIME: {current_time}. USER: {user_name}. FLOW: 1. Route? 2. Price? 3. Date? 4. Phone? 5. initiatePayment."],
+  ["system", "You are Ena Coach assistant. Ask for route, then price, then date, then phone. Use initiatePayment to trigger STK."],
   new MessagesPlaceholder("chat_history"),
   ["human", "{input}"],
   new MessagesPlaceholder("agent_scratchpad"),

@@ -16,8 +16,8 @@ const WhatsAppConfig: React.FC = () => {
   const [darajaKey, setDarajaKey] = useState('');
   const [darajaSecret, setDarajaSecret] = useState('');
   const [darajaPasskey, setDarajaPasskey] = useState('');
-  const [darajaShortcode, setDarajaShortcode] = useState('');
-  const [darajaStoreNumber, setDarajaStoreNumber] = useState('');
+  const [darajaShortcode, setDarajaShortcode] = useState('5512238');
+  const [darajaStoreNumber, setDarajaStoreNumber] = useState('4159923');
   const [darajaAccountRef, setDarajaAccountRef] = useState('ENA_COACH');
   const [darajaCallbackUrl, setDarajaCallbackUrl] = useState('');
 
@@ -67,8 +67,8 @@ const WhatsAppConfig: React.FC = () => {
               setDarajaKey(data.darajaKey || '');
               setDarajaSecret(data.darajaSecret || '');
               setDarajaPasskey(data.darajaPasskey || '');
-              setDarajaShortcode(data.darajaShortcode || '');
-              setDarajaStoreNumber(data.darajaStoreNumber || '');
+              setDarajaShortcode(data.darajaShortcode || '5512238');
+              setDarajaStoreNumber(data.darajaStoreNumber || '4159923');
               setDarajaAccountRef(data.darajaAccountRef || 'ENA_COACH');
               setDarajaCallbackUrl(data.darajaCallbackUrl || '');
           });
@@ -120,7 +120,7 @@ const WhatsAppConfig: React.FC = () => {
               setCurrentAlert({ msg: data.message, timestamp: Date.now() });
           }
       } catch (e) {
-          setCurrentAlert({ msg: "Connection lost. Please check server.", timestamp: Date.now() });
+          setCurrentAlert({ msg: "Server Connection Error.", timestamp: Date.now() });
       } finally {
           setIsTestingPayment(false);
           fetchLogsAndAlerts();
@@ -157,7 +157,7 @@ const WhatsAppConfig: React.FC = () => {
                         </p>
                       </div>
                       <p className="text-gray-500 text-[10px] mb-6 text-center italic">
-                        Tip: If logs say "Accepted" but phone doesn't ring, ensure "Till Number" is correct.
+                        Tip: If logs say "Accepted" but phone doesn't ring, verify your **Till Number** (PartyB) is correct.
                       </p>
                       <button 
                         onClick={() => setCurrentAlert(null)}
@@ -175,7 +175,7 @@ const WhatsAppConfig: React.FC = () => {
           <div className="flex justify-between items-center mb-6">
             <div className="flex items-center gap-4">
                 <span className="w-3 h-3 rounded-full bg-green-500 animate-pulse shadow-[0_0_10px_rgba(34,197,94,0.8)]"></span>
-                <p className="text-blue-400 text-xs uppercase tracking-[0.3em] font-black">Live Production Traffic</p>
+                <p className="text-blue-400 text-xs uppercase tracking-[0.3em] font-black">Lipa Na M-Pesa Live Traffic</p>
             </div>
             {lastCheckoutId && (
                 <button 
@@ -188,7 +188,7 @@ const WhatsAppConfig: React.FC = () => {
           </div>
           <div className="flex-1 overflow-y-auto text-[11px] leading-relaxed space-y-4 scrollbar-hide flex flex-col-reverse">
               <div ref={terminalEndRef} />
-              {terminalLogs.length === 0 ? <p className="text-gray-700 italic text-center py-20"># Standing by for Daraja events...</p> : terminalLogs.map((log: any, i) => (
+              {terminalLogs.length === 0 ? <p className="text-gray-700 italic text-center py-20"># Standing by for production events...</p> : terminalLogs.map((log: any, i) => (
                   <div key={i} className={`p-4 rounded-xl border transition-all ${
                     log.type === 'error' ? 'bg-red-950/20 text-red-400 border-red-900/30' : 
                     log.type === 'success' ? 'bg-green-950/20 text-green-400 border-green-900/30' : 
@@ -209,8 +209,8 @@ const WhatsAppConfig: React.FC = () => {
       <div className="bg-white rounded-[3rem] shadow-2xl border border-gray-100 overflow-hidden">
         <div className="bg-gray-50 p-10 border-b border-gray-200 flex flex-col xl:flex-row justify-between items-center gap-8">
             <div className="text-center xl:text-left">
-                <h2 className="text-3xl font-black text-gray-950 tracking-tight tracking-widest uppercase">Daraja Engine</h2>
-                <p className="text-sm text-gray-500 mt-2 font-medium">Shortcode: <span className="text-red-600 font-black">{darajaShortcode}</span></p>
+                <h2 className="text-3xl font-black text-gray-950 tracking-tight tracking-widest uppercase">Daraja Engine Hub</h2>
+                <p className="text-sm text-gray-500 mt-2 font-medium">Shortcode (Store): <span className="text-red-600 font-black">{darajaShortcode}</span></p>
             </div>
             <div className="flex bg-gray-200 p-2 rounded-2xl shadow-inner">
                 <div className="flex bg-white rounded-xl shadow-sm p-1">
@@ -226,8 +226,8 @@ const WhatsAppConfig: React.FC = () => {
             <section className="bg-red-50/50 p-10 rounded-[2.5rem] border-2 border-dashed border-red-100">
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-10">
                     <div className="max-w-md">
-                        <h3 className="text-xl font-black text-red-900 flex items-center"><i className="fas fa-satellite-dish mr-3 text-red-600"></i> Trigger Handshake</h3>
-                        <p className="text-sm text-red-700/70 font-bold mt-2 leading-relaxed">Send a live prompt to your phone. If it doesn't appear, your <b>Till Number</b> (PartyB) doesn't match your <b>Store Number</b>.</p>
+                        <h3 className="text-xl font-black text-red-900 flex items-center"><i className="fas fa-satellite-dish mr-3 text-red-600"></i> Production Handshake</h3>
+                        <p className="text-sm text-red-700/70 font-bold mt-2 leading-relaxed">Send a live prompt to your phone. If it doesn't appear, ensure **Actual Till Number** matches your green poster.</p>
                     </div>
                     <div className="flex-1 flex flex-col sm:flex-row gap-4">
                         <input 
@@ -257,7 +257,7 @@ const WhatsAppConfig: React.FC = () => {
                 </div>
                 <div className="space-y-3">
                     <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Actual Till Number (PartyB)</label>
-                    <input type="text" value={darajaStoreNumber} onChange={e => setDarajaStoreNumber(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-black text-gray-800 outline-none" placeholder="Enter 6-7 digit Till Number" />
+                    <input type="text" value={darajaStoreNumber} onChange={e => setDarajaStoreNumber(e.target.value)} className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-black text-gray-800 outline-none" placeholder="Enter Till Number (e.g. 4159923)" />
                 </div>
                 <div className="space-y-3">
                     <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest block ml-1">Verified Production Passkey</label>
@@ -274,7 +274,7 @@ const WhatsAppConfig: React.FC = () => {
             </section>
 
             <button onClick={handleSaveAndSync} className="w-full py-8 bg-red-600 text-white font-black rounded-3xl hover:bg-red-700 shadow-2xl transition-all transform active:scale-95 uppercase tracking-[0.4em] text-sm">
-                Synchronize Engine Credentials
+                Apply Production Settings
             </button>
         </div>
       </div>
