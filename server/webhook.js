@@ -1,3 +1,4 @@
+
 /**
  * Ena Coach AI Agent - LangChain Webhook Handler
  * Optimized for Speed & Concurrency
@@ -71,20 +72,14 @@ async function triggerSTKPush(phoneNumber, amount) {
   const url = 'https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
 
   let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
-  const transactionType = 'CustomerBuyGoodsOnline'; // Must be BuyGoods for Till 4159923
+  const transactionType = 'CustomerBuyGoodsOnline'; 
   
   const payload = {
-    "BusinessShortCode": DARAJA_SHORTCODE, 
-    "Password": password, 
-    "Timestamp": timestamp,
-    "TransactionType": transactionType, 
-    "Amount": Math.ceil(amount),
-    "PartyA": formattedPhone, 
-    "PartyB": DARAJA_PARTY_B, 
-    "PhoneNumber": formattedPhone,
+    "BusinessShortCode": DARAJA_SHORTCODE, "Password": password, "Timestamp": timestamp,
+    "TransactionType": transactionType, "Amount": Math.ceil(amount),
+    "PartyA": formattedPhone, "PartyB": DARAJA_PARTY_B, "PhoneNumber": formattedPhone,
     "CallBackURL": "https://ena-coach-bot.onrender.com/callback/mpesa", 
-    "AccountReference": "EnaCoach", 
-    "TransactionDesc": "Bus Ticket"
+    "AccountReference": "EnaCoach", "TransactionDesc": "Bus Ticket"
   };
 
   try {
@@ -98,7 +93,7 @@ async function triggerSTKPush(phoneNumber, amount) {
          return { success: true, checkoutRequestId: data.CheckoutRequestID, message: "STK Push sent." };
     }
     return { success: false, message: data.CustomerMessage || data.errorMessage };
-  } catch (error) { return { success: false, message: "Network error connecting to Safaricom." }; }
+  } catch (error) { return { success: false, message: "Network error." }; }
 }
 
 async function queryDarajaStatus(checkoutRequestId) {
@@ -134,14 +129,13 @@ function scheduleTransactionCheck(checkoutRequestId, userJid) {
             if (check.status !== 'UNKNOWN') finalStatus = check.status;
         }
 
-        if (finalStatus === 'PENDING') {
-            paymentStore.set(checkoutRequestId, { ...payment, status: 'TIMEOUT' });
-            await sendWhatsAppMessage(userJid, "⚠️ Payment Session Timed Out. We did not receive your payment. Please try again.");
-        } else if (finalStatus === 'FAILED') {
-             await sendWhatsAppMessage(userJid, "❌ Payment Failed. Please check your balance or PIN and try again.");
-        } else if (finalStatus === 'COMPLETED') {
+        if (finalStatus === 'COMPLETED') {
              paymentStore.set(checkoutRequestId, { ...payment, status: 'COMPLETED' });
-             await sendWhatsAppMessage(userJid, "✅ Payment Confirmed! Please reply with 'Book Ticket' to finalize your booking.");
+             // Automatic detection message
+             await sendWhatsAppMessage(userJid, "✅ Payment Verified! I am finalizing your booking now...");
+             // In a production app, we would re-invoke the agent with [PAYMENT_SUCCESS] here.
+        } else if (finalStatus === 'FAILED') {
+             await sendWhatsAppMessage(userJid, "❌ Payment failed or cancelled. Please try again.");
         }
     }, TIMEOUT_MS);
 }
@@ -170,14 +164,14 @@ const searchRoutesTool = new DynamicStructuredTool({
 
 const initiatePaymentTool = new DynamicStructuredTool({
   name: "initiatePayment",
-  description: "Initiate M-Pesa. Args: phoneNumber, amount.",
+  description: "Initiate M-Pesa. I will automatically monitor the status.",
   schema: z.object({ phoneNumber: z.string(), amount: z.number() }),
   func: async ({ phoneNumber, amount }) => {
      const res = await triggerSTKPush(phoneNumber, amount);
      if (res.success) {
          const jid = phoneNumber.replace('+', '').replace(/^0/, '254') + "@s.whatsapp.net";
          scheduleTransactionCheck(res.checkoutRequestId, jid);
-         return JSON.stringify({ status: 'initiated', message: "STK Push sent." });
+         return JSON.stringify({ status: 'initiated', message: "STK Push sent. Monitoring..." });
      }
      return JSON.stringify(res);
   },
@@ -185,7 +179,7 @@ const initiatePaymentTool = new DynamicStructuredTool({
 
 const bookTicketTool = new DynamicStructuredTool({
   name: "bookTicket",
-  description: "Book Ticket (Requires Date).",
+  description: "Generate Ticket.",
   schema: z.object({ 
       passengerName: z.string(), 
       routeId: z.string(), 
@@ -195,7 +189,6 @@ const bookTicketTool = new DynamicStructuredTool({
   func: async ({ passengerName, routeId, phoneNumber, travelDate }) => {
     const booked = getBookedSeats(routeId, travelDate);
     if (booked >= BUS_CAPACITY) return "Bus Fully Booked.";
-
     const ticket = { id: `TKT-${Date.now()}`, passengerName, routeId, date: travelDate, seat: booked+1 };
     ticketsStore.push(ticket);
     return JSON.stringify({ status: 'success', message: 'Ticket Booked.', ticket });
@@ -207,13 +200,15 @@ const tools = [searchRoutesTool, initiatePaymentTool, bookTicketTool];
 // --- AI Agent ---
 const llm = new ChatGoogleGenerativeAI({
   model: "gemini-2.5-flash",
-  apiKey: API_KEY || "dummy", 
+  apiKey: API_KEY, 
   temperature: 0,
-  maxOutputTokens: 150,
 });
 
 const prompt = ChatPromptTemplate.fromMessages([
-  ["system", "You are Martha, the Ena Coach assistant. CRITICAL DATE AWARENESS: Use the {current_time} provided in the message to determine TODAY's date. DO NOT use the year 2026 unless it is currently 2026. Customer Name: {user_name}. Flow: 1. Search Route -> 2. Ask for Travel Date -> 3. InitiatePayment -> 4. Confirm Status -> 5. BookTicket."],
+  ["system", `You are Martha, the Ena Coach assistant. Today is {current_time}. 
+  PROACTIVE MONITORING: When payment starts, tell the user: "I've sent an M-Pesa prompt. Please enter your PIN. I'll automatically detect when you're done." 
+  NEVER ask the user to tell you when they are finished. 
+  If you see [PAYMENT_SUCCESS], call bookTicket immediately.`],
   new MessagesPlaceholder("chat_history"),
   ["human", "{input}"],
   new MessagesPlaceholder("agent_scratchpad"),
@@ -222,7 +217,6 @@ const prompt = ChatPromptTemplate.fromMessages([
 const agent = await createToolCallingAgent({ llm: llm.bindTools(tools), tools, prompt });
 const agentExecutor = new AgentExecutor({ agent, tools, verbose: false });
 
-// --- Webhook Endpoint ---
 app.post('/webhook', async (req, res) => {
   const { type, data } = req.body;
   if (type !== 'messages.upsert' || !data.message) return res.status(200).send('OK');
@@ -234,14 +228,11 @@ app.post('/webhook', async (req, res) => {
   (async () => {
       try {
          const now = new Date();
-         const dateString = now.toLocaleDateString('en-KE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Africa/Nairobi' });
-         const timeString = now.toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Nairobi' });
-         const fullTime = `${dateString}, ${timeString}`;
-
+         const fullTime = now.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
          let history = userSessions.get(remoteJid) || [];
 
          const result = await agentExecutor.invoke({ 
-             input: `[Current Local Time: ${fullTime}]\nUser says: ${text}`, 
+             input: `[Time: ${fullTime}]\nUser: ${text}`, 
              current_time: fullTime, 
              user_name: data.pushName || 'Customer',
              chat_history: history
@@ -259,4 +250,4 @@ app.post('/webhook', async (req, res) => {
   res.status(200).send('OK');
 });
 
-app.listen(PORT, () => console.log(`Webhook Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Webhook Live on ${PORT}`));

@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, FunctionDeclaration, Type, Chat, GenerateContentResponse, Part, HarmCategory, HarmBlockThreshold } from '@google/genai';
 import { Ticket } from '../types';
 
@@ -17,7 +18,7 @@ const searchRoutesTool: FunctionDeclaration = {
 
 const initiatePaymentTool: FunctionDeclaration = {
   name: 'initiatePayment',
-  description: 'Initiate M-Pesa STK Push. Returns a CheckoutRequestID which MUST be stored to verify payment later.',
+  description: 'Initiate M-Pesa STK Push. Returns a CheckoutRequestID. The system will monitor this ID automatically.',
   parameters: {
     type: Type.OBJECT,
     properties: {
@@ -30,7 +31,7 @@ const initiatePaymentTool: FunctionDeclaration = {
 
 const verifyPaymentTool: FunctionDeclaration = {
   name: 'verifyPayment',
-  description: 'Check the status of a specific payment transaction. Call this after the user says they have entered their PIN.',
+  description: 'Check the status of a specific payment transaction.',
   parameters: {
     type: Type.OBJECT,
     properties: {
@@ -42,7 +43,7 @@ const verifyPaymentTool: FunctionDeclaration = {
 
 const bookTicketTool: FunctionDeclaration = {
   name: 'bookTicket',
-  description: 'Generate a SECURE ticket. ONLY Call this if verifyPayment returns "COMPLETED".',
+  description: 'Generate a SECURE ticket. ONLY Call this if verifyPayment returns "COMPLETED" or if you receive [PAYMENT_SUCCESS].',
   parameters: {
     type: Type.OBJECT,
     properties: {
@@ -164,7 +165,6 @@ export class GeminiService {
     if (!apiKey) console.warn("GeminiService initialized without API Key. Calls will fail.");
     this.ai = new GoogleGenAI({ apiKey });
     
-    // Safety Settings to prevent false blocks
     const safetySettings = [
       { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
       { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
@@ -179,22 +179,20 @@ export class GeminiService {
         safetySettings,
         systemInstruction: `You are Martha, the friendly AI Assistant for Ena Coach. 
   
+        **PROACTIVE PAYMENT MONITORING:**
+        - When you initiate a payment, tell the user: "I've sent an M-Pesa prompt to your phone. Please enter your PIN. I'll automatically detect the payment once it's complete."
+        - **NEVER** ask the user to "let me know" or "tell me when finished".
+        - If you receive a message containing "[PAYMENT_SUCCESS]", immediately call 'bookTicket' to generate the ticket using the stored CheckoutRequestID.
+
         **CRITICAL DATE AWARENESS:**
-        Every message will start with the [SYSTEM TIME]. 
-        YOU MUST use this exact date to calculate relative terms like "tomorrow" or "next week".
-        DO NOT hallucinate future years (like 2026) unless the SYSTEM TIME matches.
-        If today is 2024, tomorrow is 2024.
+        Every message will start with the [SYSTEM TIME]. Use this exact date to calculate relative terms like "tomorrow".
 
         **Your Role:**
-        You assist customers with:
-        1. Booking Tickets (Routes, Prices, Schedules).
-        2. Resolving Complaints (Issues, Lost items, Delays).
-        3. General Inquiries about Ena Coach services.
+        1. Booking Tickets.
+        2. Resolving Complaints.
+        3. General Inquiries.
         
-        **GOLDEN RULE: ASK ONLY ONE QUESTION AT A TIME.**
-        Keep the conversation natural, polite, and helpful.
-
-        User Name: Customer.
+        GOLDEN RULE: ASK ONLY ONE QUESTION AT A TIME.
         `,
         tools: [{
           functionDeclarations: [searchRoutesTool, initiatePaymentTool, verifyPaymentTool, bookTicketTool, logComplaintTool, trackBusTool]
@@ -209,17 +207,6 @@ export class GeminiService {
             safetySettings,
             systemInstruction: `You are an Intelligent Operations Manager Assistant for Ena Coach.
             **DATE AWARENESS:** Use the [SYSTEM TIME] provided in messages for all reporting. 
-            Do not guess future years.
-
-            Your role is to help the admin analyze data, manage the fleet, and make decisions.
-            
-            CAPABILITIES:
-            1. Financials: Calculate revenue and stats using 'getFinancialReport'.
-            2. Fleet Status: Check occupancy using 'getOccupancyStats'.
-            3. Manifests: Use 'getRouteManifest(routeId, date)'.
-            4. Marketing: Send broadcasts using 'broadcastMessage'.
-            5. Customer Support: Manage complaints.
-            
             TONE: Professional, concise, data-driven.`,
             tools: [{
                 functionDeclarations: [
@@ -248,7 +235,7 @@ export class GeminiService {
       logComplaint: any,
       getBusStatus: any
     },
-    onPaymentInitiated?: (phone: string, amount: number) => void
+    onPaymentInitiated?: (checkoutRequestId: string, phoneNumber: string, amount: number) => void
   ): Promise<{ text: string, ticket?: Ticket }> {
     try {
       const now = new Date();
@@ -286,34 +273,29 @@ export class GeminiService {
           } else if (name === 'initiatePayment') {
              const res = await functions.initiatePayment(args.phoneNumber as string, args.amount as number);
              if (res.success && onPaymentInitiated) {
-                 onPaymentInitiated(args.phoneNumber as string, args.amount as number);
+                 onPaymentInitiated(res.checkoutRequestId, args.phoneNumber as string, args.amount as number);
              }
              functionResponse = res; 
           } else if (name === 'verifyPayment') {
              const res = await functions.verifyPayment(args.checkoutRequestId as string);
              functionResponse = res;
           } else if (name === 'bookTicket') {
-            const paymentCheck = await functions.verifyPayment(args.checkoutRequestId as string);
-            if (paymentCheck.status === 'COMPLETED') {
-                const ticket = functions.bookTicket(
-                    args.passengerName as string, 
-                    args.routeId as string, 
-                    args.phoneNumber as string, 
-                    args.checkoutRequestId as string
-                );
-                if (ticket) {
-                    bookedTicket = ticket;
-                    functionResponse = { 
-                        status: 'success', 
-                        message: "Ticket Generated.", 
-                        ticketId: ticket.id,
-                        seat: ticket.seatNumber
-                    };
-                } else {
-                    functionResponse = { error: "Booking failed (Server Error)." };
-                }
+            const ticket = functions.bookTicket(
+                args.passengerName as string, 
+                args.routeId as string, 
+                args.phoneNumber as string, 
+                args.checkoutRequestId as string
+            );
+            if (ticket) {
+                bookedTicket = ticket;
+                functionResponse = { 
+                    status: 'success', 
+                    message: "Ticket Generated.", 
+                    ticketId: ticket.id,
+                    seat: ticket.seatNumber
+                };
             } else {
-                 functionResponse = { error: `Payment Verification Failed. Status: ${paymentCheck.status}. Ticket denied.` };
+                functionResponse = { error: "Booking failed (Server Error)." };
             }
           } else if (name === 'logComplaint') {
             const complaintId = functions.logComplaint(
@@ -346,20 +328,16 @@ export class GeminiService {
       }
 
       return { 
-        text: response.text || "I didn't have a response to that.",
+        text: response.text || "Processing completed.",
         ticket: bookedTicket
       };
 
     } catch (error) {
       console.error("Gemini Customer Error:", error);
-      if (error instanceof Error && error.message.includes('API key')) {
-        return { text: "Error: API Key is invalid or missing in configuration." };
-      }
-      return { text: "Sorry, I lost connection to the agent. Please check the console for details." };
+      return { text: "Sorry, I lost connection to the agent. Please try again." };
     }
   }
 
-  // --- ADMIN MESSAGE HANDLER ---
   async sendAdminMessage(
     message: string,
     functions: {
@@ -451,7 +429,7 @@ export class GeminiService {
         return response.text || "Processing completed.";
       } catch (error) {
           console.error("Gemini Admin Error:", error);
-          return "I encountered an error processing your administrative request. Check console for details.";
+          return "I encountered an error processing your administrative request.";
       }
   }
 }

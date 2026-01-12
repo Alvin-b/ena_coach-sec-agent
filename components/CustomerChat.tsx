@@ -12,7 +12,7 @@ const CustomerChat: React.FC = () => {
     {
       id: 'welcome',
       role: 'model',
-      text: 'Hello! I am the Ena Coach AI Agent. I can help you find buses, track locations, book seats, and handle complaints. How can I assist you?',
+      text: 'Hello! I am Martha, your Ena Coach assistant. I can help you find buses, track locations, book seats, and handle complaints. How can I assist you today?',
       timestamp: new Date()
     }
   ]);
@@ -21,12 +21,10 @@ const CustomerChat: React.FC = () => {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+  const [isMonitoringPayment, setIsMonitoringPayment] = useState(false);
   
-  // Dynamic API Key Loading
   const [dynamicApiKey, setDynamicApiKey] = useState<string>(process.env.API_KEY || '');
   const [isKeyLoading, setIsKeyLoading] = useState<boolean>(!process.env.API_KEY);
-  
-  // Clock state for UI feedback
   const [currentTime, setCurrentTime] = useState(new Date());
 
   useEffect(() => {
@@ -49,7 +47,6 @@ const CustomerChat: React.FC = () => {
     }
   }, []);
 
-  // Initialize Gemini Service
   const gemini = useMemo(() => {
     if (!dynamicApiKey) return null;
     return new GeminiService(dynamicApiKey);
@@ -60,6 +57,49 @@ const CustomerChat: React.FC = () => {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  const pollPaymentStatus = async (checkoutRequestId: string) => {
+      setIsMonitoringPayment(true);
+      let attempts = 0;
+      const maxAttempts = 30; // 2 minutes approx
+
+      const interval = setInterval(async () => {
+          attempts++;
+          const statusRes = await verifyPayment(checkoutRequestId);
+          
+          if (statusRes.status === 'COMPLETED') {
+              clearInterval(interval);
+              setIsMonitoringPayment(false);
+              // Proactively notify the agent of success
+              handleAutomatedFollowUp(`[PAYMENT_SUCCESS] CheckoutID: ${checkoutRequestId}`);
+          } else if (statusRes.status === 'FAILED' || attempts >= maxAttempts) {
+              clearInterval(interval);
+              setIsMonitoringPayment(false);
+          }
+      }, 5000);
+  };
+
+  const handleAutomatedFollowUp = async (triggerText: string) => {
+      if (!gemini) return;
+      setIsLoading(true);
+      try {
+          const { text, ticket } = await gemini.sendMessage(triggerText, {
+              searchRoutes, bookTicket, initiatePayment, verifyPayment, logComplaint, getBusStatus
+          });
+          const aiMsg: ChatMessage = {
+              id: Date.now().toString(),
+              role: 'model',
+              text: text,
+              timestamp: new Date(),
+              ticket: ticket 
+          };
+          setMessages((prev) => [...prev, aiMsg]);
+      } catch (error) {
+          console.error("Auto Follow-up Error:", error);
+      } finally {
+          setIsLoading(false);
+      }
+  };
 
   const handleSend = async () => {
     if (!input.trim() || !gemini) return;
@@ -83,6 +123,9 @@ const CustomerChat: React.FC = () => {
         verifyPayment,
         logComplaint,
         getBusStatus
+      }, (checkoutId) => {
+          // Callback when payment is initiated
+          pollPaymentStatus(checkoutId);
       });
 
       const aiMsg: ChatMessage = {
@@ -97,7 +140,7 @@ const CustomerChat: React.FC = () => {
       setMessages((prev) => [...prev, {
         id: Date.now().toString(),
         role: 'system',
-        text: 'Error connecting to agent.',
+        text: 'Connection issue. Please check your internet.',
         timestamp: new Date()
       }]);
     } finally {
@@ -109,37 +152,18 @@ const CustomerChat: React.FC = () => {
 
   if (isKeyLoading) {
       return (
-          <div className="flex items-center justify-center h-full bg-gray-100">
+          <div className="flex items-center justify-center h-full bg-gray-100 font-sans">
               <div className="text-center">
                   <i className="fas fa-circle-notch fa-spin text-red-600 text-3xl mb-4"></i>
-                  <p className="text-gray-600">Connecting to secure server...</p>
+                  <p className="text-gray-600 font-bold">Securely connecting to server...</p>
               </div>
           </div>
       );
   }
 
-  if (!dynamicApiKey) {
-      return (
-          <div className="flex items-center justify-center h-full bg-gray-100 p-6">
-              <div className="bg-white p-8 rounded-lg shadow-md text-center max-w-md">
-                  <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4 text-red-600 text-2xl">
-                     <i className="fas fa-key"></i>
-                  </div>
-                  <h2 className="text-xl font-bold text-gray-800 mb-2">API Key Missing</h2>
-                  <p className="text-gray-600 mb-4 text-sm">
-                      The application could not find a valid Google Gemini API Key in the environment.
-                  </p>
-              </div>
-          </div>
-      )
-  }
-
   return (
-    <div className="flex flex-col h-full bg-gray-100 relative overflow-hidden">
-      {/* Auth Modal Overlay */}
+    <div className="flex flex-col h-full bg-gray-100 relative overflow-hidden font-sans">
       {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
-      
-      {/* Ticket Card Overlay (Full View) */}
       {selectedTicket && <TicketCard ticket={selectedTicket} onClose={() => setSelectedTicket(null)} />}
 
       {/* Simulator Header */}
@@ -148,72 +172,39 @@ const CustomerChat: React.FC = () => {
           <i className="fas fa-robot"></i>
         </div>
         <div className="flex-1">
-          <h1 className="font-bold text-lg leading-tight">Agent Simulator</h1>
-          <div className="flex items-center text-[10px] text-gray-400 font-mono">
+          <h1 className="font-bold text-lg leading-tight tracking-tight">Agent Simulator</h1>
+          <div className="flex items-center text-[10px] text-gray-400 font-mono uppercase tracking-widest">
              <i className="fas fa-clock mr-1"></i>
-             {currentTime.toLocaleDateString('en-KE', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })} | {currentTime.toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' })}
+             {currentTime.toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
           </div>
         </div>
         <div className="ml-auto flex items-center space-x-4 relative">
-          <div className="relative">
-            <button 
-                onClick={() => currentUser ? setShowProfileMenu(!showProfileMenu) : setShowAuthModal(true)}
-                className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center hover:bg-gray-600 transition"
-            >
-              <i className={`fas ${currentUser ? 'fa-user' : 'fa-flask'}`}></i>
-            </button>
-
-            {showProfileMenu && currentUser && (
-                <div className="absolute right-0 top-10 w-72 bg-white rounded shadow-lg text-gray-800 z-40 overflow-hidden ring-1 ring-black ring-opacity-5">
-                    <div className="p-4 border-b bg-gray-50">
-                        <p className="font-bold">{currentUser.name}</p>
-                        <p className="text-xs text-gray-500">{currentUser.email}</p>
-                    </div>
-                    <div className="max-h-60 overflow-y-auto">
-                        <div className="p-2 text-xs font-bold text-gray-500 uppercase bg-gray-50 sticky top-0">My Tickets</div>
-                        {myBookings.length === 0 ? (
-                            <p className="p-3 text-sm text-gray-400 text-center">No bookings found.</p>
-                        ) : (
-                            myBookings.map(ticket => (
-                                <div 
-                                    key={ticket.id} 
-                                    className="p-3 border-b hover:bg-red-50 cursor-pointer transition group"
-                                    onClick={() => { setSelectedTicket(ticket); setShowProfileMenu(false); }}
-                                >
-                                    <div className="flex justify-between items-start">
-                                        <span className="font-bold text-sm text-gray-800">{ticket.routeDetails?.destination}</span>
-                                    </div>
-                                    <div className="flex justify-between mt-1 text-xs text-gray-500">
-                                         <span>Seat: {ticket.seatNumber}</span>
-                                         <span className="group-hover:text-red-600 group-hover:underline">View Ticket</span>
-                                    </div>
-                                </div>
-                            ))
-                        )}
-                    </div>
-                    <button 
-                        onClick={() => { logout(); setShowProfileMenu(false); }}
-                        className="w-full text-left p-3 text-red-600 hover:bg-red-50 text-sm font-medium border-t"
-                    >
-                        <i className="fas fa-sign-out-alt mr-2"></i> Logout
-                    </button>
-                </div>
-            )}
-          </div>
+          {isMonitoringPayment && (
+              <div className="flex items-center space-x-2 bg-red-900/40 px-3 py-1 rounded-full border border-red-500/30 animate-pulse">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+                  <span className="text-[10px] font-black text-red-400 uppercase tracking-tighter">Monitoring M-Pesa...</span>
+              </div>
+          )}
+          <button 
+              onClick={() => currentUser ? setShowProfileMenu(!showProfileMenu) : setShowAuthModal(true)}
+              className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center hover:bg-gray-600 transition shadow-inner"
+          >
+            <i className={`fas ${currentUser ? 'fa-user' : 'fa-flask'}`}></i>
+          </button>
         </div>
       </div>
       
-      {/* Disclaimer Banner */}
-      <div className="bg-yellow-100 text-yellow-800 px-4 py-2 text-xs text-center border-b border-yellow-200 font-medium">
-         <i className="fas fa-calendar-check mr-1"></i> 
-         Agent is synced to: {currentTime.toLocaleDateString()}
+      {/* Date Banner */}
+      <div className="bg-white text-gray-500 px-4 py-1.5 text-[10px] text-center border-b border-gray-200 font-black uppercase tracking-[0.2em]">
+         <i className="fas fa-calendar-day mr-2 text-red-500"></i> 
+         Today: {currentTime.toLocaleDateString('en-KE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
       </div>
 
       {/* Chat Area */}
       <div 
         ref={scrollRef}
         onClick={() => setShowProfileMenu(false)}
-        className="flex-1 overflow-y-auto p-4 space-y-4 bg-white"
+        className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#f8f9fa]"
       >
         {messages.map((msg) => (
           <div
@@ -221,38 +212,36 @@ const CustomerChat: React.FC = () => {
             className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             <div
-              className={`max-w-[85%] md:max-w-[70%] p-3 rounded-lg shadow-sm relative text-sm md:text-base ${
+              className={`max-w-[85%] md:max-w-[70%] p-4 rounded-2xl shadow-sm relative text-sm md:text-base leading-relaxed ${
                 msg.role === 'user'
-                  ? 'bg-blue-600 text-white rounded-tr-none' 
+                  ? 'bg-red-600 text-white rounded-tr-none' 
                   : msg.role === 'system' 
-                    ? 'bg-red-100 text-red-800'
-                    : 'bg-gray-100 text-gray-800 rounded-tl-none border border-gray-200'
+                    ? 'bg-yellow-50 text-yellow-800 border border-yellow-100 italic text-xs text-center'
+                    : 'bg-white text-gray-800 rounded-tl-none border border-gray-100 shadow-[0_2px_10px_rgba(0,0,0,0.03)]'
               }`}
             >
               <p className="whitespace-pre-wrap">{msg.text}</p>
               
               {msg.ticket && (
-                <div className="mt-3 bg-white border border-gray-200 rounded-lg p-3 shadow-sm text-gray-800">
-                  <div className="flex items-center space-x-3 mb-2">
+                <div className="mt-4 bg-gray-50 border border-gray-200 rounded-xl p-4 shadow-inner text-gray-800">
+                  <div className="flex items-center space-x-3 mb-3">
                     <div className="bg-red-600 text-white w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs">EC</div>
-                    <div>
-                      <h3 className="font-bold text-gray-800 text-xs uppercase tracking-wide">Ena Coach Ticket</h3>
-                    </div>
+                    <h3 className="font-black text-gray-900 text-[10px] uppercase tracking-widest">Ena Coach Digital Ticket</h3>
                   </div>
-                  <div className="text-xs text-gray-700 mb-2 space-y-1">
-                    <p><strong>To:</strong> {msg.ticket.routeDetails?.destination}</p>
-                    <p><strong>Seat:</strong> <span className="text-red-600 font-bold text-sm">{msg.ticket.seatNumber}</span></p>
+                  <div className="text-[11px] text-gray-600 mb-4 space-y-1.5">
+                    <p className="flex justify-between"><span className="font-bold opacity-60">TO:</span> <span className="font-black text-gray-900">{msg.ticket.routeDetails?.destination}</span></p>
+                    <p className="flex justify-between"><span className="font-bold opacity-60">SEAT:</span> <span className="text-red-600 font-black">{msg.ticket.seatNumber}</span></p>
                   </div>
                   <button 
                     onClick={() => setSelectedTicket(msg.ticket!)}
-                    className="w-full bg-red-600 text-white py-1.5 rounded text-xs font-bold hover:bg-red-700 transition"
+                    className="w-full bg-gray-900 text-white py-2.5 rounded-lg text-xs font-black uppercase tracking-widest hover:bg-black transition active:scale-95 shadow-md"
                   >
-                    View Ticket
+                    Download PDF Ticket
                   </button>
                 </div>
               )}
 
-              <span className={`text-[10px] block text-right mt-1 ${msg.role === 'user' ? 'text-blue-100' : 'text-gray-400'}`}>
+              <span className={`text-[9px] font-black uppercase tracking-widest block text-right mt-2 opacity-50 ${msg.role === 'user' ? 'text-red-100' : 'text-gray-400'}`}>
                 {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </span>
             </div>
@@ -260,27 +249,25 @@ const CustomerChat: React.FC = () => {
         ))}
         {isLoading && (
            <div className="flex justify-start">
-             <div className="bg-gray-100 p-3 rounded-lg rounded-tl-none shadow-sm border border-gray-200">
-                <div className="flex space-x-1">
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-75"></div>
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-150"></div>
+             <div className="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-gray-100 flex items-center space-x-3">
+                <div className="flex space-x-1.5">
+                  <div className="w-1.5 h-1.5 bg-red-400 rounded-full animate-bounce"></div>
+                  <div className="w-1.5 h-1.5 bg-red-400 rounded-full animate-bounce delay-75"></div>
+                  <div className="w-1.5 h-1.5 bg-red-400 rounded-full animate-bounce delay-150"></div>
                 </div>
+                {isMonitoringPayment && <span className="text-[10px] font-bold text-red-500 uppercase">Detecting PIN Entry...</span>}
              </div>
            </div>
         )}
       </div>
 
       {/* Input Area */}
-      <div className="bg-gray-50 p-2 flex items-center space-x-2 border-t border-gray-200">
-        <button className="p-2 text-gray-400 hover:text-gray-600">
-          <i className="fas fa-paperclip text-xl"></i>
-        </button>
-        <div className="flex-1 bg-white rounded-lg px-4 py-2 shadow-sm border border-gray-300">
+      <div className="bg-white p-4 flex items-center space-x-3 border-t border-gray-100">
+        <div className="flex-1 bg-gray-50 rounded-2xl px-6 py-4 border border-gray-200 focus-within:border-red-500 transition-colors">
           <input
             type="text"
-            className="w-full bg-transparent outline-none text-gray-700 placeholder-gray-400"
-            placeholder="Type a message..."
+            className="w-full bg-transparent outline-none text-gray-800 placeholder-gray-400 font-medium"
+            placeholder="Type your destination..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
@@ -290,9 +277,9 @@ const CustomerChat: React.FC = () => {
         <button 
           onClick={handleSend}
           disabled={!input.trim() || isLoading}
-          className={`p-3 rounded-lg transition shadow-md ${input.trim() ? 'bg-blue-600 text-white' : 'bg-gray-300 text-white'}`}
+          className={`w-14 h-14 rounded-2xl transition shadow-lg active:scale-90 flex items-center justify-center ${input.trim() ? 'bg-red-600 text-white' : 'bg-gray-200 text-gray-400'}`}
         >
-          <i className="fas fa-paper-plane"></i>
+          <i className="fas fa-paper-plane text-xl"></i>
         </button>
       </div>
     </div>
