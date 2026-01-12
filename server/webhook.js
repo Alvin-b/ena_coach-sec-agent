@@ -1,3 +1,4 @@
+
 /**
  * Ena Coach AI Agent - LangChain Webhook Handler
  * Optimized for Speed & Concurrency
@@ -206,7 +207,7 @@ const llm = new ChatGoogleGenerativeAI({
 });
 
 const prompt = ChatPromptTemplate.fromMessages([
-  ["system", "You are Ena Coach assistant. Ask for route, then price, then date, then phone. Use initiatePayment to trigger STK."],
+  ["system", "You are Martha, the Ena Coach assistant. Today is {current_time}. Customer Name: {user_name}. Flow: 1. Search Route -> 2. Ask for Travel Date -> 3. InitiatePayment -> 4. Confirm Status -> 5. BookTicket."],
   new MessagesPlaceholder("chat_history"),
   ["human", "{input}"],
   new MessagesPlaceholder("agent_scratchpad"),

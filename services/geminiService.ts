@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, FunctionDeclaration, Type, Chat, GenerateContentResponse, Part, HarmCategory, HarmBlockThreshold } from '@google/genai';
 import { Ticket } from '../types';
 
@@ -172,6 +173,8 @@ export class GeminiService {
       { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
     ];
 
+    const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
+
     // 1. Customer Chat Instance
     this.customerChat = this.ai.chats.create({
       model: 'gemini-2.5-flash',
@@ -179,6 +182,9 @@ export class GeminiService {
         safetySettings,
         systemInstruction: `You are Martha, the friendly AI Assistant for Ena Coach. 
   
+        **CURRENT SYSTEM DATE & TIME:** ${now}
+        Always use this date to calculate relative times like "tomorrow" or "next week".
+
         **Your Role:**
         You assist customers with:
         1. Booking Tickets (Routes, Prices, Schedules).
@@ -207,6 +213,8 @@ export class GeminiService {
         config: {
             safetySettings,
             systemInstruction: `You are an Intelligent Operations Manager Assistant for Ena Coach.
+            **CURRENT SYSTEM DATE & TIME:** ${now}
+
             Your role is to help the admin analyze data, manage the fleet, and make decisions.
             
             CAPABILITIES:
@@ -250,7 +258,7 @@ export class GeminiService {
   ): Promise<{ text: string, ticket?: Ticket }> {
     try {
       const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
-      const contextualMessage = `[SYSTEM CONTEXT: Current Date & Time is ${now}]\nUser: ${message}`;
+      const contextualMessage = `[CONTEXT: Today is ${now}]\nUser: ${message}`;
 
       let response: GenerateContentResponse = await this.customerChat.sendMessage({ message: contextualMessage });
       let bookedTicket: Ticket | undefined;
@@ -375,7 +383,8 @@ export class GeminiService {
     }
   ): Promise<string> {
       try {
-        const responsePromise = this.adminChat.sendMessage({ message });
+        const now = new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
+        const responsePromise = this.adminChat.sendMessage({ message: `[CONTEXT: Today is ${now}]\nUser: ${message}` });
         let response = await responsePromise;
         let loops = 0;
 
