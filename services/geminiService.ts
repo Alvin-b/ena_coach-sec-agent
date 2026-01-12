@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, FunctionDeclaration, Type, Chat, GenerateContentResponse, Part, HarmCategory, HarmBlockThreshold } from '@google/genai';
 import { Ticket } from '../types';
 
@@ -180,10 +179,11 @@ export class GeminiService {
         safetySettings,
         systemInstruction: `You are Martha, the friendly AI Assistant for Ena Coach. 
   
-        **TIME AWARENESS:**
-        You will receive the current date and time in every user message. 
-        You MUST use this provided timestamp to calculate relative dates like "tomorrow", "next week", or "this weekend".
-        Never hallucinate dates in the future beyond what the current context provides.
+        **CRITICAL DATE AWARENESS:**
+        Every message will start with the [SYSTEM TIME]. 
+        YOU MUST use this exact date to calculate relative terms like "tomorrow" or "next week".
+        DO NOT hallucinate future years (like 2026) unless the SYSTEM TIME matches.
+        If today is 2024, tomorrow is 2024.
 
         **Your Role:**
         You assist customers with:
@@ -208,7 +208,8 @@ export class GeminiService {
         config: {
             safetySettings,
             systemInstruction: `You are an Intelligent Operations Manager Assistant for Ena Coach.
-            You MUST use the current timestamp provided in messages for all reporting and data analysis.
+            **DATE AWARENESS:** Use the [SYSTEM TIME] provided in messages for all reporting. 
+            Do not guess future years.
 
             Your role is to help the admin analyze data, manage the fleet, and make decisions.
             

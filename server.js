@@ -20,7 +20,7 @@ const runtimeConfig = {
     evolutionToken: (process.env.EVOLUTION_API_TOKEN || '').trim(),
     instanceName: (process.env.INSTANCE_NAME || 'EnaCoach').trim(),
     
-    // M-Pesa (Daraja) - PRODUCTION CREDENTIALS
+    // M-Pesa (Daraja) - PRODUCTION CREDENTIALS (Hardcoded Defaults for Persistence)
     darajaEnv: 'production', 
     darajaType: 'Till', 
     darajaKey: 'vz2udWubzGyYSTzkEWGo7wM6MTP2aK8uc6GnoPHAMuxgTB6J',
@@ -41,7 +41,7 @@ function addSystemLog(msg, type = 'info') {
     const log = { msg, type, timestamp: new Date().toISOString() };
     systemLogs.unshift(log);
     if (systemLogs.length > 100) systemLogs.pop();
-    console.log(`[${type.toUpperCase()}] ${msg}`); // Also log to standard console
+    console.log(`[${type.toUpperCase()}] ${msg}`);
     if (type === 'error') {
         lastCriticalError = { msg, timestamp: Date.now() };
     }
@@ -87,12 +87,12 @@ async function triggerSTKPush(phoneNumber, amount) {
       formattedPhone = '254' + formattedPhone;
   }
   
-  addSystemLog(`Preparing KES ${amount} STK Push for ${formattedPhone}...`, 'info');
+  addSystemLog(`Initiating STK Push (Production). Target: ${formattedPhone}, Amount: ${amount}`, 'info');
 
   try {
       const tokenResult = await getDarajaToken();
       if (typeof tokenResult === 'object' && tokenResult.error) {
-          addSystemLog(`Daraja Auth Failed: ${tokenResult.error}`, 'error');
+          addSystemLog(`Auth Failed: ${tokenResult.error}`, 'error');
           return { success: false, error: "AUTH_ERROR", message: tokenResult.error };
       }
       
@@ -118,8 +118,7 @@ async function triggerSTKPush(phoneNumber, amount) {
         "TransactionDesc": "BusTicket"
       };
 
-      // CRITICAL LOGGING: Verify these numbers in your console/monitor
-      addSystemLog(`[DARAJA PAYLOAD] ShortCode: ${payload.BusinessShortCode}, PartyB: ${payload.PartyB}, Type: ${payload.TransactionType}`, 'info');
+      addSystemLog(`DARAJA PAYLOAD: ShortCode=${payload.BusinessShortCode}, PartyB=${payload.PartyB}, Phone=${payload.PhoneNumber}`, 'info');
 
       const response = await fetch(`${getDarajaBaseUrl()}/mpesa/stkpush/v1/processrequest`, {
         method: 'POST', 
@@ -130,15 +129,14 @@ async function triggerSTKPush(phoneNumber, amount) {
       const data = await response.json();
 
       if (data.ResponseCode === "0") {
-          addSystemLog(`Safaricom Success: ${data.ResponseDescription}. ID: ${data.CheckoutRequestID}`, 'success');
+          addSystemLog(`Safaricom Accepted: ${data.ResponseDescription}`, 'success');
           return { success: true, checkoutRequestId: data.CheckoutRequestID, description: data.ResponseDescription };
       }
       
-      const failMsg = `M-Pesa API Rejected [${data.ResponseCode}]: ${data.CustomerMessage || data.ResponseDescription}`;
-      addSystemLog(failMsg, 'error');
-      return { success: false, error: "REJECTION", message: failMsg };
+      addSystemLog(`M-Pesa API Rejected: ${data.CustomerMessage || data.ResponseDescription}`, 'error');
+      return { success: false, error: "REJECTION", message: data.CustomerMessage || data.ResponseDescription };
   } catch (error) {
-      addSystemLog(`Daraja Connection Error: ${error.message}`, 'error');
+      addSystemLog(`Connection Failure: ${error.message}`, 'error');
       return { success: false, error: "SYSTEM_ERROR", message: error.message };
   }
 }
@@ -165,10 +163,10 @@ async function queryDarajaStatus(id) {
         });
         const data = await response.json();
         if (data.ResponseCode === "0") {
-            if (data.ResultCode === "0") return { status: 'COMPLETED', message: "Payment Verified" };
+            if (data.ResultCode === "0") return { status: 'COMPLETED', message: "Verified" };
             return { status: 'FAILED', message: data.ResultDesc };
         }
-        return { status: 'PENDING', message: data.ResponseDescription || "Awaiting PIN entry" };
+        return { status: 'PENDING', message: data.ResponseDescription || "Awaiting PIN" };
     } catch (e) { return { status: 'ERROR', message: e.message }; }
 }
 
@@ -186,7 +184,7 @@ app.get('/api/debug/latest-error', (req, res) => {
 
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog(`Production configuration updated. Store: ${runtimeConfig.darajaShortcode}, Till: ${runtimeConfig.darajaStoreNumber}`, 'info');
+    addSystemLog(`Configuration manually updated via Dashboard.`, 'info');
     res.json({ success: true });
 });
 
@@ -202,8 +200,8 @@ app.post('/callback/mpesa', (req, res) => {
     const { Body } = req.body;
     if (Body?.stkCallback) {
         const { CheckoutRequestID, ResultCode, ResultDesc } = Body.stkCallback;
-        if(ResultCode === 0) addSystemLog(`SUCCESS: Transaction ${CheckoutRequestID} confirmed by customer.`, 'success');
-        else addSystemLog(`CANCELLED: Transaction ${CheckoutRequestID} failed (${ResultDesc})`, 'error');
+        if(ResultCode === 0) addSystemLog(`Payment ${CheckoutRequestID} confirmed by Safaricom.`, 'success');
+        else addSystemLog(`Payment ${CheckoutRequestID} rejected by user.`, 'error');
     }
     res.sendStatus(200);
 });
@@ -211,4 +209,4 @@ app.post('/callback/mpesa', (req, res) => {
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach Engine running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Ena Coach Engine Live on port ${PORT}`));

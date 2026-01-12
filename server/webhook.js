@@ -1,4 +1,3 @@
-
 /**
  * Ena Coach AI Agent - LangChain Webhook Handler
  * Optimized for Speed & Concurrency
@@ -22,7 +21,7 @@ const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL ? process.env.EVOLUTION_
 const EVOLUTION_API_TOKEN = process.env.EVOLUTION_API_TOKEN;
 const INSTANCE_NAME = process.env.INSTANCE_NAME;
 
-// Daraja Config - PRODUCTION (Verified)
+// Daraja Config - PRODUCTION (Verified Defaults)
 const DARAJA_CONSUMER_KEY = process.env.DARAJA_CONSUMER_KEY || 'vz2udWubzGyYSTzkEWGo7wM6MTP2aK8uc6GnoPHAMuxgTB6J';
 const DARAJA_CONSUMER_SECRET = process.env.DARAJA_CONSUMER_SECRET || 'bW5AKfCRXIqQ1DyAMriKVAKkUULaQl8FLdPA8SadMqiylrwQPZR8tJAAS0mVG1rm';
 const DARAJA_PASSKEY = process.env.DARAJA_PASSKEY || '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f';
@@ -55,7 +54,7 @@ async function getDarajaToken() {
   if (!DARAJA_CONSUMER_KEY || !DARAJA_CONSUMER_SECRET) return null;
   const baseUrl = 'https://api.safaricom.co.ke';
   const url = `${baseUrl}/oauth/v1/generate?grant_type=client_credentials`;
-  const auth = Buffer.from(`${DARAJA_CONSUMER_KEY}:${DARAJA_CONSUMER_SECRET}`).toString('base64');
+  const auth = Buffer.from(`${DARAJA_CONSUMER_KEY.trim()}:${DARAJA_CONSUMER_SECRET.trim()}`).toString('base64');
   try {
     const response = await fetch(url, { headers: { 'Authorization': `Basic ${auth}` } });
     const data = await response.json();
@@ -65,20 +64,27 @@ async function getDarajaToken() {
 
 async function triggerSTKPush(phoneNumber, amount) {
   const token = await getDarajaToken();
-  if (!token) return { success: false, message: "Payment service unavailable." };
+  if (!token) return { success: false, message: "Payment service unavailable (Auth Error)." };
   
   const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
   const password = Buffer.from(`${DARAJA_SHORTCODE}${DARAJA_PASSKEY}${timestamp}`).toString('base64');
   const url = 'https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
 
   let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
-  const transactionType = 'CustomerBuyGoodsOnline';
+  const transactionType = 'CustomerBuyGoodsOnline'; // Must be BuyGoods for Till 4159923
   
   const payload = {
-    "BusinessShortCode": DARAJA_SHORTCODE, "Password": password, "Timestamp": timestamp,
-    "TransactionType": transactionType, "Amount": Math.ceil(amount),
-    "PartyA": formattedPhone, "PartyB": DARAJA_PARTY_B, "PhoneNumber": formattedPhone,
-    "CallBackURL": "https://ena-coach-bot.onrender.com/callback/mpesa", "AccountReference": "EnaCoach", "TransactionDesc": "Bus Ticket"
+    "BusinessShortCode": DARAJA_SHORTCODE, 
+    "Password": password, 
+    "Timestamp": timestamp,
+    "TransactionType": transactionType, 
+    "Amount": Math.ceil(amount),
+    "PartyA": formattedPhone, 
+    "PartyB": DARAJA_PARTY_B, 
+    "PhoneNumber": formattedPhone,
+    "CallBackURL": "https://ena-coach-bot.onrender.com/callback/mpesa", 
+    "AccountReference": "EnaCoach", 
+    "TransactionDesc": "Bus Ticket"
   };
 
   try {
@@ -92,7 +98,7 @@ async function triggerSTKPush(phoneNumber, amount) {
          return { success: true, checkoutRequestId: data.CheckoutRequestID, message: "STK Push sent." };
     }
     return { success: false, message: data.CustomerMessage || data.errorMessage };
-  } catch (error) { return { success: false, message: "Network error." }; }
+  } catch (error) { return { success: false, message: "Network error connecting to Safaricom." }; }
 }
 
 async function queryDarajaStatus(checkoutRequestId) {
@@ -207,7 +213,7 @@ const llm = new ChatGoogleGenerativeAI({
 });
 
 const prompt = ChatPromptTemplate.fromMessages([
-  ["system", "You are Martha, the Ena Coach assistant. CRITICAL: Use the {current_time} provided in the message to determine TODAY's date. Customer Name: {user_name}. Flow: 1. Search Route -> 2. Ask for Travel Date -> 3. InitiatePayment -> 4. Confirm Status -> 5. BookTicket."],
+  ["system", "You are Martha, the Ena Coach assistant. CRITICAL DATE AWARENESS: Use the {current_time} provided in the message to determine TODAY's date. DO NOT use the year 2026 unless it is currently 2026. Customer Name: {user_name}. Flow: 1. Search Route -> 2. Ask for Travel Date -> 3. InitiatePayment -> 4. Confirm Status -> 5. BookTicket."],
   new MessagesPlaceholder("chat_history"),
   ["human", "{input}"],
   new MessagesPlaceholder("agent_scratchpad"),
