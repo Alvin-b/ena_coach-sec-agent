@@ -62,20 +62,33 @@ app.use(bodyParser.json());
 // --- WhatsApp Logic ---
 async function sendWhatsApp(jid, text) {
     if (!runtimeConfig.evolutionUrl || !runtimeConfig.evolutionToken) {
-        return { success: false, message: "WhatsApp Provider not configured." };
+        return { success: false, message: "Missing URL/Token in Integration Hub." };
     }
     const cleanUrl = runtimeConfig.evolutionUrl.replace(/\/$/, '');
+    // Sanitize JID: Ensure no '+' and just digits
+    const cleanJid = jid.replace(/[^0-9]/g, '');
+    
     try {
         const response = await fetch(`${cleanUrl}/message/sendText/${runtimeConfig.instanceName}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'apikey': runtimeConfig.evolutionToken },
-            body: JSON.stringify({ number: jid, text: text })
+            headers: { 
+                'Content-Type': 'application/json', 
+                'apikey': runtimeConfig.evolutionToken 
+            },
+            body: JSON.stringify({ number: cleanJid, text: text })
         });
-        const data = await response.json();
-        if (response.ok) return { success: true };
-        return { success: false, message: data.message || "Failed to send message." };
+        
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.indexOf("application/json") !== -1) {
+            const data = await response.json();
+            if (response.ok) return { success: true };
+            return { success: false, message: data.message || `Evolution Error: ${response.status}` };
+        } else {
+            const textErr = await response.text();
+            return { success: false, message: `Server Error: ${response.status}` };
+        }
     } catch(e) { 
-        return { success: false, message: e.message }; 
+        return { success: false, message: `Fetch Failed: ${e.message}` }; 
     }
 }
 
@@ -93,16 +106,20 @@ async function getDarajaToken() {
     });
     const data = await response.json();
     return data.access_token;
-  } catch (error) { return null; }
+  } catch (error) { 
+      console.error("Daraja Auth Error", error);
+      return null; 
+  }
 }
 
 async function triggerSTKPush(phoneNumber, amount) {
   const token = await getDarajaToken();
-  if (!token) return { success: false, message: "M-Pesa Auth Error: Check Credentials" };
+  if (!token) return { success: false, message: "M-Pesa Auth Failed. Check Key/Secret." };
   
   const timestamp = getDarajaTimestamp();
   const password = Buffer.from(`${runtimeConfig.darajaShortcode}${runtimeConfig.darajaPasskey}${timestamp}`).toString('base64');
-  let formattedPhone = phoneNumber.replace('+', '').replace(/^0/, '254');
+  let formattedPhone = phoneNumber.replace(/[^0-9]/g, '');
+  if (formattedPhone.startsWith('0')) formattedPhone = '254' + formattedPhone.substring(1);
 
   const payload = {
     "BusinessShortCode": runtimeConfig.darajaShortcode,
@@ -128,9 +145,9 @@ async function triggerSTKPush(phoneNumber, amount) {
       if (data.ResponseCode === "0") {
           return { success: true, checkoutRequestId: data.CheckoutRequestID };
       }
-      return { success: false, message: data.CustomerMessage || data.ResponseDescription };
+      return { success: false, message: data.CustomerMessage || data.ResponseDescription || "Gateway Rejected Request" };
   } catch (e) {
-      return { success: false, message: "M-Pesa Gateway Timeout" };
+      return { success: false, message: "M-Pesa API Network Error" };
   }
 }
 
@@ -146,17 +163,17 @@ app.post('/api/test/gemini', async (req, res) => {
 
 app.post('/api/test/whatsapp', async (req, res) => {
     const { phoneNumber } = req.body;
-    if (!phoneNumber) return res.json({ success: false, message: "Phone required" });
-    const result = await sendWhatsApp(phoneNumber, "🚀 Martha System Test: WhatsApp Integration Operational.");
-    addSystemLog(`WhatsApp Test to ${phoneNumber}: ${result.success ? 'PASSED' : 'FAILED'}`, result.success ? 'success' : 'error');
+    if (!phoneNumber) return res.json({ success: false, message: "No target number provided." });
+    const result = await sendWhatsApp(phoneNumber, "🚀 Martha Engine Diagnostic: Connection Active.");
+    addSystemLog(`WhatsApp Test to ${phoneNumber}: ${result.success ? 'PASSED' : 'FAILED - ' + result.message}`, result.success ? 'success' : 'error');
     res.json(result);
 });
 
 app.post('/api/test/mpesa', async (req, res) => {
     const { phoneNumber } = req.body;
-    if (!phoneNumber) return res.json({ success: false, message: "Phone required" });
+    if (!phoneNumber) return res.json({ success: false, message: "No target number provided." });
     const result = await triggerSTKPush(phoneNumber, 1);
-    addSystemLog(`M-Pesa Test to ${phoneNumber}: ${result.success ? 'PASSED' : 'FAILED'}`, result.success ? 'success' : 'error');
+    addSystemLog(`M-Pesa Test to ${phoneNumber}: ${result.success ? 'PASSED' : 'FAILED - ' + result.message}`, result.success ? 'success' : 'error');
     res.json(result);
 });
 

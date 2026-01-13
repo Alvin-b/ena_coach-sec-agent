@@ -104,7 +104,7 @@ const WhatsAppConfig: React.FC = () => {
       let payload = {};
       if (type !== 'gemini') {
           if (!testPhone) {
-              setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: 'Enter phone first' } }));
+              setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: 'Phone required' } }));
               return;
           }
           payload = { phoneNumber: testPhone };
@@ -118,8 +118,7 @@ const WhatsAppConfig: React.FC = () => {
           });
           
           if (!res.ok) {
-              const text = await res.text();
-              throw new Error(res.status === 404 ? "Endpoint not found" : "Server error");
+              throw new Error(`Server returned ${res.status}`);
           }
 
           const data = await res.json();
@@ -128,11 +127,11 @@ const WhatsAppConfig: React.FC = () => {
               [type]: { 
                   loading: false, 
                   status: data.success ? 'success' : 'error', 
-                  msg: data.success ? 'Operational' : (data.message || 'Check config')
+                  msg: data.success ? 'Integration Operational' : (data.message || 'Verification Failed')
               } 
           }));
       } catch (e: any) {
-          setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: e.message || 'Unreachable' } }));
+          setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: e.message || 'Network unreachable' } }));
       }
   };
 
