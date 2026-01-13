@@ -22,6 +22,14 @@ const WhatsAppConfig: React.FC = () => {
   const [darajaAccountRef, setDarajaAccountRef] = useState('ENA_COACH');
   const [darajaCallbackUrl, setDarajaCallbackUrl] = useState('');
 
+  // Diagnostics State
+  const [testPhone, setTestPhone] = useState('');
+  const [testResults, setTestResults] = useState<Record<string, { loading: boolean, status?: 'success'|'error', msg?: string }>>({
+      gemini: { loading: false },
+      whatsapp: { loading: false },
+      mpesa: { loading: false }
+  });
+
   // UI State
   const [terminalLogs, setTerminalLogs] = useState<any[]>([]);
   const [webhookUrl, setWebhookUrl] = useState('');
@@ -90,6 +98,38 @@ const WhatsAppConfig: React.FC = () => {
     finally { setIsSaving(false); }
   };
 
+  const runDiagnostics = async (type: 'gemini' | 'whatsapp' | 'mpesa') => {
+      setTestResults(prev => ({ ...prev, [type]: { loading: true } }));
+      
+      let payload = {};
+      if (type !== 'gemini') {
+          if (!testPhone) {
+              setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: 'Missing test number.' } }));
+              return;
+          }
+          payload = { phoneNumber: testPhone };
+      }
+
+      try {
+          const res = await fetch(`/api/test/${type}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+          });
+          const data = await res.json();
+          setTestResults(prev => ({ 
+              ...prev, 
+              [type]: { 
+                  loading: false, 
+                  status: data.success ? 'success' : 'error', 
+                  msg: data.success ? 'Integration Operational' : (data.message || 'Test Failed')
+              } 
+          }));
+      } catch (e) {
+          setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: 'Server Unreachable' } }));
+      }
+  };
+
   const copyToClipboard = (text: string) => {
       navigator.clipboard.writeText(text);
       alert("Copied to clipboard!");
@@ -142,6 +182,84 @@ const WhatsAppConfig: React.FC = () => {
                       <span className="font-bold">{log.msg}</span>
                   </div>
               ))}
+          </div>
+      </div>
+
+      {/* API Test Suite */}
+      <div className="bg-white rounded-[3rem] shadow-2xl border border-gray-100 overflow-hidden">
+          <div className="bg-red-50 p-10 border-b border-red-100">
+              <h2 className="text-2xl font-black text-red-900 tracking-widest uppercase">Integration Test Center</h2>
+              <p className="text-xs text-red-600 mt-1 font-bold">Validate your configurations with real-time diagnostic pings.</p>
+          </div>
+          <div className="p-10 space-y-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-end">
+                <div className="space-y-3">
+                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Test Phone Number (For WhatsApp & M-Pesa)</label>
+                    <input 
+                        type="text" 
+                        value={testPhone} 
+                        onChange={e => setTestPhone(e.target.value)} 
+                        placeholder="e.g. 0712345678"
+                        className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-bold text-gray-900 outline-none focus:border-red-400 transition"
+                    />
+                </div>
+                <p className="text-[10px] text-gray-400 italic mb-3 leading-relaxed">
+                    Note: M-Pesa test triggers a <strong>1 KES</strong> real push. WhatsApp test sends a template system message.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {/* Gemini Diagnostic */}
+                  <div className={`p-6 rounded-3xl border-2 transition ${testResults.gemini.status === 'success' ? 'border-green-100 bg-green-50/30' : 'border-gray-50 bg-gray-50/50'}`}>
+                      <h4 className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">Gemini AI Engine</h4>
+                      <button 
+                        onClick={() => runDiagnostics('gemini')}
+                        disabled={testResults.gemini.loading}
+                        className="w-full py-3 bg-white border border-gray-200 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-gray-50 transition active:scale-95 disabled:opacity-50"
+                      >
+                          {testResults.gemini.loading ? 'Pinging...' : 'Test AI Ping'}
+                      </button>
+                      {testResults.gemini.status && (
+                          <p className={`mt-3 text-[10px] font-bold text-center uppercase tracking-tighter ${testResults.gemini.status === 'success' ? 'text-green-600' : 'text-red-600'}`}>
+                             {testResults.gemini.status === 'success' ? '✅ Online' : `❌ ${testResults.gemini.msg}`}
+                          </p>
+                      )}
+                  </div>
+
+                  {/* WhatsApp Diagnostic */}
+                  <div className={`p-6 rounded-3xl border-2 transition ${testResults.whatsapp.status === 'success' ? 'border-green-100 bg-green-50/30' : 'border-gray-50 bg-gray-50/50'}`}>
+                      <h4 className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">WhatsApp (Evolution)</h4>
+                      <button 
+                        onClick={() => runDiagnostics('whatsapp')}
+                        disabled={testResults.whatsapp.loading}
+                        className="w-full py-3 bg-white border border-gray-200 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-gray-50 transition active:scale-95 disabled:opacity-50"
+                      >
+                          {testResults.whatsapp.loading ? 'Sending...' : 'Test Send MSG'}
+                      </button>
+                      {testResults.whatsapp.status && (
+                          <p className={`mt-3 text-[10px] font-bold text-center uppercase tracking-tighter ${testResults.whatsapp.status === 'success' ? 'text-green-600' : 'text-red-600'}`}>
+                             {testResults.whatsapp.status === 'success' ? '✅ Sent' : `❌ ${testResults.whatsapp.msg}`}
+                          </p>
+                      )}
+                  </div>
+
+                  {/* M-Pesa Diagnostic */}
+                  <div className={`p-6 rounded-3xl border-2 transition ${testResults.mpesa.status === 'success' ? 'border-green-100 bg-green-50/30' : 'border-gray-50 bg-gray-50/50'}`}>
+                      <h4 className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">M-Pesa (Daraja)</h4>
+                      <button 
+                        onClick={() => runDiagnostics('mpesa')}
+                        disabled={testResults.mpesa.loading}
+                        className="w-full py-3 bg-white border border-gray-200 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-gray-50 transition active:scale-95 disabled:opacity-50"
+                      >
+                          {testResults.mpesa.loading ? 'Pushing...' : 'Test STK Push'}
+                      </button>
+                      {testResults.mpesa.status && (
+                          <p className={`mt-3 text-[10px] font-bold text-center uppercase tracking-tighter ${testResults.mpesa.status === 'success' ? 'text-green-600' : 'text-red-600'}`}>
+                             {testResults.mpesa.status === 'success' ? '✅ Request Sent' : `❌ ${testResults.mpesa.msg}`}
+                          </p>
+                      )}
+                  </div>
+              </div>
           </div>
       </div>
 

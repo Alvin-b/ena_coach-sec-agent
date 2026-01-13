@@ -75,9 +75,12 @@ async function sendWhatsApp(jid, text) {
         if (!response.ok) {
             const err = await response.text();
             addSystemLog(`Evolution API Error: ${err}`, 'error');
+            return { success: false, error: err };
         }
+        return { success: true };
     } catch(e) { 
         addSystemLog(`WhatsApp Service Error: ${e.message}`, 'error'); 
+        return { success: false, error: e.message };
     }
 }
 
@@ -181,35 +184,6 @@ function monitorPaymentAndNotify(jid, checkoutId) {
     }, 5000);
 }
 
-// --- Gemini AI Toolset ---
-
-const searchRoutesTool = {
-  name: "searchRoutes",
-  parameters: {
-    type: Type.OBJECT,
-    properties: { origin: { type: Type.STRING }, destination: { type: Type.STRING } },
-    required: ["origin", "destination"]
-  }
-};
-
-const initiatePaymentTool = {
-  name: "initiatePayment",
-  parameters: {
-    type: Type.OBJECT,
-    properties: { phoneNumber: { type: Type.STRING }, amount: { type: Type.NUMBER } },
-    required: ["phoneNumber", "amount"]
-  }
-};
-
-const bookTicketTool = {
-  name: "bookTicket",
-  parameters: {
-    type: Type.OBJECT,
-    properties: { passengerName: { type: Type.STRING }, routeId: { type: Type.STRING } },
-    required: ["passengerName", "routeId"]
-  }
-};
-
 // --- WhatsApp Message Processing Engine ---
 
 async function processWhatsAppMessage(remoteJid, text) {
@@ -277,7 +251,69 @@ async function processWhatsAppMessage(remoteJid, text) {
     }
 }
 
+// --- Gemini Tool Definitions (Duplicated for simple object structure) ---
+const searchRoutesTool = {
+  name: "searchRoutes",
+  parameters: {
+    type: Type.OBJECT,
+    properties: { origin: { type: Type.STRING }, destination: { type: Type.STRING } },
+    required: ["origin", "destination"]
+  }
+};
+
+const initiatePaymentTool = {
+  name: "initiatePayment",
+  parameters: {
+    type: Type.OBJECT,
+    properties: { phoneNumber: { type: Type.STRING }, amount: { type: Type.NUMBER } },
+    required: ["phoneNumber", "amount"]
+  }
+};
+
+const bookTicketTool = {
+  name: "bookTicket",
+  parameters: {
+    type: Type.OBJECT,
+    properties: { passengerName: { type: Type.STRING }, routeId: { type: Type.STRING } },
+    required: ["passengerName", "routeId"]
+  }
+};
+
 // --- Endpoints ---
+
+// Diagnostics API
+app.post('/api/test/gemini', async (req, res) => {
+    if (!runtimeConfig.apiKey) return res.json({ success: false, message: "No API Key configured." });
+    try {
+        const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: "Operational status check. Reply with 'MARTHA_ONLINE'."
+        });
+        const text = response.text;
+        const success = text && text.includes('MARTHA_ONLINE');
+        addSystemLog(`Gemini Test: ${success ? 'PASSED' : 'FAILED'}`, success ? 'success' : 'error');
+        res.json({ success, response: text });
+    } catch (e) {
+        res.json({ success: false, message: e.message });
+    }
+});
+
+app.post('/api/test/whatsapp', async (req, res) => {
+    const { phoneNumber } = req.body;
+    if (!phoneNumber) return res.json({ success: false, message: "Target phone number required." });
+    const result = await sendWhatsApp(phoneNumber, "🚀 Ena Coach System Test: Your WhatsApp Integration is working perfectly!");
+    addSystemLog(`WhatsApp Test to ${phoneNumber}: ${result.success ? 'PASSED' : 'FAILED'}`, result.success ? 'success' : 'error');
+    res.json(result);
+});
+
+app.post('/api/test/mpesa', async (req, res) => {
+    const { phoneNumber } = req.body;
+    if (!phoneNumber) return res.json({ success: false, message: "Target phone number required." });
+    const result = await triggerSTKPush(phoneNumber, 1); // 1 KES test
+    addSystemLog(`M-Pesa Test to ${phoneNumber}: ${result.success ? 'PASSED' : 'FAILED'}`, result.success ? 'success' : 'error');
+    res.json(result);
+});
 
 app.post('/webhook', async (req, res) => {
   const event = req.body.event || req.body.type;
