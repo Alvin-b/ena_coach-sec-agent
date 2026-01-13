@@ -104,7 +104,7 @@ const WhatsAppConfig: React.FC = () => {
       let payload = {};
       if (type !== 'gemini') {
           if (!testPhone) {
-              setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: 'Missing test number.' } }));
+              setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: 'Enter phone first' } }));
               return;
           }
           payload = { phoneNumber: testPhone };
@@ -116,17 +116,23 @@ const WhatsAppConfig: React.FC = () => {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload)
           });
+          
+          if (!res.ok) {
+              const text = await res.text();
+              throw new Error(res.status === 404 ? "Endpoint not found" : "Server error");
+          }
+
           const data = await res.json();
           setTestResults(prev => ({ 
               ...prev, 
               [type]: { 
                   loading: false, 
                   status: data.success ? 'success' : 'error', 
-                  msg: data.success ? 'Integration Operational' : (data.message || 'Test Failed')
+                  msg: data.success ? 'Operational' : (data.message || 'Check config')
               } 
           }));
-      } catch (e) {
-          setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: 'Server Unreachable' } }));
+      } catch (e: any) {
+          setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: e.message || 'Unreachable' } }));
       }
   };
 
@@ -294,7 +300,7 @@ const WhatsAppConfig: React.FC = () => {
                 </div>
             </section>
 
-            {/* Restored: Daraja M-Pesa Settings */}
+            {/* Daraja M-Pesa Settings */}
             <section>
                 <h3 className="text-xs font-black text-green-600 uppercase tracking-widest mb-8 flex items-center">
                     <span className="w-8 h-px bg-green-600 mr-4"></span>

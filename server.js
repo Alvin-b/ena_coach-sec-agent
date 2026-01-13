@@ -31,7 +31,7 @@ const runtimeConfig = {
     darajaShortcode: '5512238', 
     darajaStoreNumber: '4159923', 
     darajaAccountRef: 'ENA_COACH',
-    darajaCallbackUrl: 'https://ena-coach-bot.onrender.com/callback/mpesa',
+    darajaCallbackUrl: 'https://ena-coach-sec-agent.onrender.com/callback/mpesa',
 };
 
 const systemLogs = []; 
@@ -98,7 +98,7 @@ async function getDarajaToken() {
 
 async function triggerSTKPush(phoneNumber, amount) {
   const token = await getDarajaToken();
-  if (!token) return { success: false, message: "M-Pesa Token Error (Check Credentials)" };
+  if (!token) return { success: false, message: "M-Pesa Auth Error: Check Credentials" };
   
   const timestamp = getDarajaTimestamp();
   const password = Buffer.from(`${runtimeConfig.darajaShortcode}${runtimeConfig.darajaPasskey}${timestamp}`).toString('base64');
@@ -130,28 +130,31 @@ async function triggerSTKPush(phoneNumber, amount) {
       }
       return { success: false, message: data.CustomerMessage || data.ResponseDescription };
   } catch (e) {
-      return { success: false, message: "M-Pesa Network Timeout" };
+      return { success: false, message: "M-Pesa Gateway Timeout" };
   }
 }
 
 // --- Diagnostic Endpoints ---
 app.post('/api/test/gemini', async (req, res) => {
     try {
+        if (!runtimeConfig.apiKey) throw new Error("API Key missing");
         const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
         const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: "Operational Ping" });
         res.json({ success: !!response.text });
-    } catch (e) { res.json({ success: false, message: e.message }); }
+    } catch (e) { res.status(200).json({ success: false, message: e.message }); }
 });
 
 app.post('/api/test/whatsapp', async (req, res) => {
     const { phoneNumber } = req.body;
-    const result = await sendWhatsApp(phoneNumber, "🚀 Martha System Test: WhatsApp Integration Connected.");
+    if (!phoneNumber) return res.json({ success: false, message: "Phone required" });
+    const result = await sendWhatsApp(phoneNumber, "🚀 Martha System Test: WhatsApp Integration Operational.");
     addSystemLog(`WhatsApp Test to ${phoneNumber}: ${result.success ? 'PASSED' : 'FAILED'}`, result.success ? 'success' : 'error');
     res.json(result);
 });
 
 app.post('/api/test/mpesa', async (req, res) => {
     const { phoneNumber } = req.body;
+    if (!phoneNumber) return res.json({ success: false, message: "Phone required" });
     const result = await triggerSTKPush(phoneNumber, 1);
     addSystemLog(`M-Pesa Test to ${phoneNumber}: ${result.success ? 'PASSED' : 'FAILED'}`, result.success ? 'success' : 'error');
     res.json(result);
@@ -161,7 +164,7 @@ app.post('/api/test/mpesa', async (req, res) => {
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog("System configuration updated by Admin.", "info");
+    addSystemLog("Engine settings updated.", "info");
     res.json({ success: true });
 });
 
@@ -190,4 +193,4 @@ app.get('/api/debug/system-logs', (req, res) => res.json(systemLogs));
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => addSystemLog(`Martha Engine Live on port ${PORT}`, 'info'));
+app.listen(PORT, '0.0.0.0', () => addSystemLog(`Ena Coach Engine Live on port ${PORT}`, 'info'));

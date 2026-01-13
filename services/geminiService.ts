@@ -102,6 +102,33 @@ const searchRoutesTool: FunctionDeclaration = {
   },
 };
 
+const initiatePaymentTool: FunctionDeclaration = {
+  name: 'initiatePayment',
+  description: 'Triggers an M-Pesa STK Push. Use this when the user chooses a route and is ready to pay.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+        phoneNumber: { type: Type.STRING, description: 'Customer phone number for M-Pesa push' },
+        amount: { type: Type.NUMBER, description: 'Ticket price' }
+    },
+    required: ['phoneNumber', 'amount'],
+  },
+};
+
+const bookTicketTool: FunctionDeclaration = {
+  name: 'bookTicket',
+  description: 'Finalizes the booking and generates a ticket. Call this ONLY after payment confirmation or if user is ready.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+        passengerName: { type: Type.STRING },
+        routeId: { type: Type.STRING },
+        phoneNumber: { type: Type.STRING }
+    },
+    required: ['passengerName', 'routeId', 'phoneNumber'],
+  },
+};
+
 export class GeminiService {
   private ai: GoogleGenAI;
   private customerChat: Chat;
@@ -115,8 +142,13 @@ export class GeminiService {
       model: 'gemini-3-flash-preview',
       config: {
         safetySettings,
-        systemInstruction: "You are Martha, Ena Coach Assistant. Help customers book tickets.",
-        tools: [{ functionDeclarations: [searchRoutesTool] }]
+        systemInstruction: `You are Martha, the friendly Ena Coach AI Assistant. 
+        - Assist users with booking bus tickets.
+        - You can search for routes, initiate M-Pesa payments, and finalize bookings.
+        - When a user selects a route, use 'initiatePayment'. 
+        - Once payment is verified (or for testing), use 'bookTicket'.
+        - Keep responses concise and helpful for a chat interface.`,
+        tools: [{ functionDeclarations: [searchRoutesTool, initiatePaymentTool, bookTicketTool] }]
       }
     });
 
@@ -195,8 +227,51 @@ export class GeminiService {
       } catch (e) { return "Operation failed."; }
   }
 
-  async sendMessage(msg: string, functions: any): Promise<{text: string, ticket?: Ticket}> {
-      const response = await this.customerChat.sendMessage({ message: msg });
-      return { text: response.text || "Thinking..." };
+  async sendMessage(
+    msg: string, 
+    functions: any, 
+    onPaymentInit?: (checkoutId: string) => void
+  ): Promise<{text: string, ticket?: Ticket}> {
+      try {
+        let response = await this.customerChat.sendMessage({ message: msg });
+        let ticket: Ticket | undefined;
+        let loops = 0;
+
+        while (response.functionCalls && response.functionCalls.length > 0 && loops < 5) {
+            loops++;
+            const parts: Part[] = [];
+            
+            for (const call of response.functionCalls) {
+                const { name, args, id } = call;
+                let functionResponse;
+
+                if (name === 'searchRoutes') {
+                    functionResponse = await functions.searchRoutes(args.origin, args.destination);
+                } else if (name === 'initiatePayment') {
+                    const res = await functions.initiatePayment(args.phoneNumber, args.amount);
+                    if (res.success && onPaymentInit) onPaymentInit(res.checkoutRequestId);
+                    functionResponse = res;
+                } else if (name === 'bookTicket') {
+                    const res = await functions.bookTicket(args.passengerName, args.routeId, args.phoneNumber);
+                    if (res) {
+                        ticket = res;
+                        // Inject a secure unique hash for the QR
+                        const secureHash = btoa(`${ticket.id}-${ticket.passengerName}-${Date.now()}`).substring(0, 16);
+                        ticket.qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${secureHash}`;
+                        functionResponse = { status: 'success', ticketId: ticket.id };
+                    } else {
+                        functionResponse = { status: 'failed', message: 'Booking limit reached or route unavailable' };
+                    }
+                }
+                
+                parts.push({ functionResponse: { name, response: { result: functionResponse }, id } });
+            }
+            response = await this.customerChat.sendMessage({ message: parts });
+        }
+        return { text: response.text || "Thinking...", ticket };
+      } catch (e) {
+          console.error("Gemini Chat Error:", e);
+          return { text: "I'm having trouble processing that right now. Could you please try again?" };
+      }
   }
 }
