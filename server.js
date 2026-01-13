@@ -62,33 +62,50 @@ app.use(bodyParser.json());
 // --- WhatsApp Logic ---
 async function sendWhatsApp(jid, text) {
     if (!runtimeConfig.evolutionUrl || !runtimeConfig.evolutionToken) {
-        return { success: false, message: "Missing URL/Token in Integration Hub." };
+        return { success: false, message: "Check Hub: Missing URL or Token." };
     }
+
     const cleanUrl = runtimeConfig.evolutionUrl.replace(/\/$/, '');
-    // Sanitize JID: Ensure no '+' and just digits
-    const cleanJid = jid.replace(/[^0-9]/g, '');
     
+    // SMART SANITIZER: Convert 07... to 2547...
+    let cleanJid = jid.replace(/[^0-9]/g, '');
+    if (cleanJid.startsWith('0')) {
+        cleanJid = '254' + cleanJid.substring(1);
+    } else if (cleanJid.startsWith('7')) {
+        cleanJid = '254' + cleanJid;
+    }
+    
+    const instance = encodeURIComponent(runtimeConfig.instanceName.trim());
+    const targetUrl = `${cleanUrl}/message/sendText/${instance}`;
+
     try {
-        const response = await fetch(`${cleanUrl}/message/sendText/${runtimeConfig.instanceName}`, {
+        const response = await fetch(targetUrl, {
             method: 'POST',
             headers: { 
                 'Content-Type': 'application/json', 
-                'apikey': runtimeConfig.evolutionToken 
+                'apikey': runtimeConfig.evolutionToken.trim(),
+                'api-key': runtimeConfig.evolutionToken.trim() // Redundant header for compatibility
             },
-            body: JSON.stringify({ number: cleanJid, text: text })
+            body: JSON.stringify({ 
+                number: cleanJid, 
+                text: text,
+                options: { delay: 0, presence: "composing" }
+            })
         });
         
         const contentType = response.headers.get("content-type");
         if (contentType && contentType.indexOf("application/json") !== -1) {
             const data = await response.json();
             if (response.ok) return { success: true };
-            return { success: false, message: data.message || `Evolution Error: ${response.status}` };
+            return { success: false, message: data.message || `Status ${response.status}` };
         } else {
             const textErr = await response.text();
+            // If it's a 404, the path might be different on this server
+            if (response.status === 404) return { success: false, message: "404: Instance path incorrect. Verify Instance Name." };
             return { success: false, message: `Server Error: ${response.status}` };
         }
     } catch(e) { 
-        return { success: false, message: `Fetch Failed: ${e.message}` }; 
+        return { success: false, message: `Network Error: ${e.message}` }; 
     }
 }
 
@@ -118,8 +135,11 @@ async function triggerSTKPush(phoneNumber, amount) {
   
   const timestamp = getDarajaTimestamp();
   const password = Buffer.from(`${runtimeConfig.darajaShortcode}${runtimeConfig.darajaPasskey}${timestamp}`).toString('base64');
+  
+  // SANITIZER: Ensure 254 format for M-Pesa
   let formattedPhone = phoneNumber.replace(/[^0-9]/g, '');
   if (formattedPhone.startsWith('0')) formattedPhone = '254' + formattedPhone.substring(1);
+  if (formattedPhone.startsWith('7')) formattedPhone = '254' + formattedPhone;
 
   const payload = {
     "BusinessShortCode": runtimeConfig.darajaShortcode,
@@ -145,7 +165,7 @@ async function triggerSTKPush(phoneNumber, amount) {
       if (data.ResponseCode === "0") {
           return { success: true, checkoutRequestId: data.CheckoutRequestID };
       }
-      return { success: false, message: data.CustomerMessage || data.ResponseDescription || "Gateway Rejected Request" };
+      return { success: false, message: data.CustomerMessage || data.ResponseDescription || "Gateway Rejected" };
   } catch (e) {
       return { success: false, message: "M-Pesa API Network Error" };
   }
@@ -163,15 +183,15 @@ app.post('/api/test/gemini', async (req, res) => {
 
 app.post('/api/test/whatsapp', async (req, res) => {
     const { phoneNumber } = req.body;
-    if (!phoneNumber) return res.json({ success: false, message: "No target number provided." });
-    const result = await sendWhatsApp(phoneNumber, "🚀 Martha Engine Diagnostic: Connection Active.");
+    if (!phoneNumber) return res.json({ success: false, message: "Target phone required." });
+    const result = await sendWhatsApp(phoneNumber, "🚀 Martha Engine Connection Test: SUCCESS. WhatsApp Integration is online.");
     addSystemLog(`WhatsApp Test to ${phoneNumber}: ${result.success ? 'PASSED' : 'FAILED - ' + result.message}`, result.success ? 'success' : 'error');
     res.json(result);
 });
 
 app.post('/api/test/mpesa', async (req, res) => {
     const { phoneNumber } = req.body;
-    if (!phoneNumber) return res.json({ success: false, message: "No target number provided." });
+    if (!phoneNumber) return res.json({ success: false, message: "Target phone required." });
     const result = await triggerSTKPush(phoneNumber, 1);
     addSystemLog(`M-Pesa Test to ${phoneNumber}: ${result.success ? 'PASSED' : 'FAILED - ' + result.message}`, result.success ? 'success' : 'error');
     res.json(result);
@@ -181,7 +201,7 @@ app.post('/api/test/mpesa', async (req, res) => {
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog("Engine settings updated.", "info");
+    addSystemLog("Integration settings updated.", "info");
     res.json({ success: true });
 });
 
@@ -210,4 +230,4 @@ app.get('/api/debug/system-logs', (req, res) => res.json(systemLogs));
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => addSystemLog(`Ena Coach Engine Live on port ${PORT}`, 'info'));
+app.listen(PORT, '0.0.0.0', () => addSystemLog(`Ena Coach Engine Operational on port ${PORT}`, 'info'));
