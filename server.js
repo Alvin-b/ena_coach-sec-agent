@@ -15,7 +15,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 10000;
 
-// --- Runtime Configuration (Persistent in memory during process) ---
+// --- Runtime Configuration ---
 const runtimeConfig = {
     apiKey: (process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim(),
     evolutionUrl: (process.env.EVOLUTION_API_URL || '').trim(),
@@ -45,17 +45,16 @@ function addSystemLog(msg, type = 'info') {
 const app = express();
 
 /** 
- * GLOBAL TRAFFIC SNIFFER (Aggressive)
- * This logs EVERY request hitting the server to diagnose delivery issues.
+ * DEEP PACKET SNIFFER (Aggressive)
+ * Logs details about EVERY POST request to help find lost webhooks.
  */
 app.use((req, res, next) => {
-    // Log static file requests only once to keep terminal clean
+    const isWebhookRelated = req.url.includes('webhook') || req.url.includes('callback') || req.method === 'POST';
     const isAsset = req.url.match(/\.(js|css|png|jpg|svg|ico|map)$/) || req.url.startsWith('/@');
-    if (!isAsset) {
+    
+    if (isWebhookRelated && !isAsset && !req.url.startsWith('/api')) {
         const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-        const method = req.method;
-        const path = req.url;
-        addSystemLog(`TRAFFIC: ${method} ${path} | IP: ${ip}`, 'info');
+        addSystemLog(`TRAFFIC: ${req.method} ${req.url} | Content-Type: ${req.headers['content-type']} | IP: ${ip}`, 'info');
     }
     next();
 });
@@ -68,7 +67,7 @@ app.use(express.text({ type: '*/*' }));
 // --- WhatsApp Logic ---
 async function sendWhatsApp(jid, text) {
     if (!runtimeConfig.evolutionUrl || !runtimeConfig.evolutionToken) {
-        addSystemLog("CONFIG ERROR: Evolution API URL/Token is empty.", "error");
+        addSystemLog("CONFIG ERROR: Evolution API configuration incomplete.", "error");
         return { success: false, message: "Missing Evolution Config." };
     }
     
@@ -79,8 +78,6 @@ async function sendWhatsApp(jid, text) {
     
     const instance = encodeURIComponent(runtimeConfig.instanceName.trim());
     const targetUrl = `${cleanUrl}/message/sendText/${instance}`;
-
-    addSystemLog(`ATTEMPT: Sending WhatsApp to ${cleanNumber}...`, 'info');
 
     try {
         const response = await fetch(targetUrl, {
@@ -101,11 +98,11 @@ async function sendWhatsApp(jid, text) {
             return { success: true };
         } else {
             const errBody = await response.text();
-            addSystemLog(`GATEWAY ERROR: Evolution API ${response.status} | Body: ${errBody.substring(0, 100)}`, 'error');
+            addSystemLog(`GATEWAY ERROR: Evolution API returned ${response.status}`, 'error');
             return { success: false, message: `Status ${response.status}` };
         }
     } catch(e) { 
-        addSystemLog(`NETWORK ERROR: Failed to reach Evolution API: ${e.message}`, 'error');
+        addSystemLog(`NETWORK ERROR: Evolution API unreachable: ${e.message}`, 'error');
         return { success: false, message: e.message }; 
     }
 }
@@ -113,15 +110,15 @@ async function sendWhatsApp(jid, text) {
 async function handleAIProcess(phoneNumber, incomingText) {
     try {
         if (!runtimeConfig.apiKey) {
-            addSystemLog("AI HALTED: Gemini API Key is missing. Check Integration Tab.", "error");
+            addSystemLog("AI HALTED: Missing API Key.", "error");
             return;
         }
         const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
         const response = await ai.models.generateContent({ 
             model: 'gemini-3-flash-preview', 
-            contents: `User: "${incomingText}". You are Martha from Ena Coach. Reply briefly.`,
+            contents: `User: "${incomingText}". You are Martha, the Ena Coach AI agent.`,
             config: { 
-                systemInstruction: "You are Martha, the Ena Coach AI. Keep replies under 50 words. Focus on booking buses in Kenya." 
+                systemInstruction: "You are Martha, the Ena Coach AI. You help users book buses. Be concise." 
             }
         });
 
@@ -129,24 +126,23 @@ async function handleAIProcess(phoneNumber, incomingText) {
             await sendWhatsApp(phoneNumber, response.text);
         }
     } catch (e) { 
-        addSystemLog(`AI ERROR: Gemini processing failed: ${e.message}`, 'error'); 
+        addSystemLog(`AI ERROR: ${e.message}`, 'error'); 
     }
 }
 
-// --- High-Resilience Webhook ---
-// Support for GET validation (some services ping the URL to check if it exists)
-app.get('/webhook', (req, res) => {
-    addSystemLog("WEBHOOK PROBE: GET /webhook received (Validation check).", "success");
-    res.status(200).send('Martha Webhook Active');
-});
+// --- Multi-Method Webhook Handler ---
+const webhookHandler = async (req, res) => {
+    if (req.method === 'GET') {
+        addSystemLog("WEBHOOK PROBE: GET /webhook (Ping successful).", "success");
+        return res.status(200).json({ status: "online", service: "martha-ai" });
+    }
 
-app.post('/webhook', async (req, res) => {
-    addSystemLog(`WEBHOOK PULSE: POST /webhook hit.`, 'success');
+    addSystemLog(`WEBHOOK PULSE: Incoming ${req.method} payload.`, 'info');
     
     let payload = req.body;
     if (typeof payload === 'string') {
         try { payload = JSON.parse(payload); } catch(e) {
-            addSystemLog("WEBHOOK WARNING: Raw payload is not JSON. Attempting string parsing...", "error");
+            addSystemLog("WEBHOOK WARNING: Payload is not JSON. Use Evolution v2 settings.", "error");
         }
     }
 
@@ -154,10 +150,9 @@ app.post('/webhook', async (req, res) => {
     const data = payload.data;
     
     if (eventType) {
-        addSystemLog(`WEBHOOK EVENT: ${eventType} detected.`, 'success');
+        addSystemLog(`EVENT DETECTED: ${eventType}`, 'success');
     } else {
-        const bodyKeys = Object.keys(payload || {});
-        addSystemLog(`WEBHOOK UNKNOWN: Received payload with keys [${bodyKeys.join(', ')}].`, 'error');
+        addSystemLog(`UNKNOWN FORMAT: Keys found: [${Object.keys(payload || {}).join(', ')}]`, 'error');
     }
 
     if ((eventType === 'messages.upsert' || eventType === 'MESSAGES_UPSERT') && data) {
@@ -170,13 +165,15 @@ app.post('/webhook', async (req, res) => {
                          messageObj.message?.imageMessage?.caption;
 
             if (text && !fromMe) {
-                addSystemLog(`MESSAGE RECEIVED: "${text}" from ${remoteJid}`, 'success');
+                addSystemLog(`MESSAGE: [${remoteJid}] "${text}"`, 'success');
                 handleAIProcess(remoteJid, text);
             }
         }
     }
     res.status(200).send('OK');
-});
+};
+
+app.all('/webhook', webhookHandler);
 
 // --- M-Pesa Logic ---
 const getDarajaBaseUrl = () => runtimeConfig.darajaEnv === 'production' 
@@ -197,7 +194,7 @@ async function getDarajaToken() {
     const key = runtimeConfig.darajaKey.trim();
     const secret = runtimeConfig.darajaSecret.trim();
     if (!key || !secret) {
-        addSystemLog("M-PESA ERROR: Consumer Key or Secret is missing.", "error");
+        addSystemLog("M-PESA ERROR: Key or Secret is missing.", "error");
         return null;
     }
 
@@ -208,27 +205,27 @@ async function getDarajaToken() {
         });
         const data = await response.json();
         if (data.access_token) return data.access_token;
-        addSystemLog(`M-PESA AUTH FAILED: ${JSON.stringify(data)}`, 'error');
+        addSystemLog(`M-PESA AUTH REJECTED: ${data.errorMessage || 'Invalid Credentials'}`, 'error');
         return null;
     } catch (error) { 
-        addSystemLog(`M-PESA NETWORK ERROR: ${error.message}`, 'error');
+        addSystemLog(`M-PESA NETWORK: Safaricom unreachable`, 'error');
         return null; 
     }
 }
 
 async function triggerSTKPush(phoneNumber, amount) {
-    addSystemLog(`M-PESA START: Initiating STK Push for KES ${amount} to ${phoneNumber}...`, 'info');
+    addSystemLog(`M-PESA: Starting STK push for ${phoneNumber}`, 'info');
     
     const token = await getDarajaToken();
-    if (!token) return { success: false, message: "Authentication Failed with Safaricom." };
+    if (!token) return { success: false, message: "Auth failed. Check Consumer Key/Secret." };
     
     const timestamp = getDarajaTimestamp();
     const shortcode = runtimeConfig.darajaShortcode.trim();
     const passkey = runtimeConfig.darajaPasskey.trim();
     
     if (!shortcode || !passkey) {
-        addSystemLog("M-PESA ERROR: Shortcode or Passkey is missing.", "error");
-        return { success: false, message: "Missing Shortcode/Passkey." };
+        addSystemLog("M-PESA ERROR: Shortcode or Passkey missing.", "error");
+        return { success: false, message: "Check Shortcode/Passkey." };
     }
 
     const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
@@ -248,7 +245,7 @@ async function triggerSTKPush(phoneNumber, amount) {
         "PhoneNumber": formattedPhone,
         "CallBackURL": runtimeConfig.darajaCallbackUrl.trim(),
         "AccountReference": runtimeConfig.darajaAccountRef.trim() || 'EnaCoach',
-        "TransactionDesc": "Bus Ticket Booking"
+        "TransactionDesc": "Bus Ticket"
     };
 
     try {
@@ -262,14 +259,14 @@ async function triggerSTKPush(phoneNumber, amount) {
         });
         const data = await response.json();
         if (data.ResponseCode === "0") {
-            addSystemLog(`M-PESA SUCCESS: STK Push triggered. ReqID: ${data.CheckoutRequestID}`, 'success');
+            addSystemLog(`M-PESA: STK triggered successfully.`, 'success');
             return { success: true, checkoutRequestId: data.CheckoutRequestID };
         }
-        addSystemLog(`M-PESA REJECTED: ${data.CustomerMessage || data.ResponseDescription}`, 'error');
-        return { success: false, message: data.CustomerMessage || data.ResponseDescription || "Gateway Rejected" };
+        addSystemLog(`M-PESA REJECTED: ${data.ResponseDescription}`, 'error');
+        return { success: false, message: data.ResponseDescription || "Rejected by Gateway" };
     } catch (e) {
-        addSystemLog(`M-PESA API ERROR: ${e.message}`, 'error');
-        return { success: false, message: "M-Pesa API is unreachable." };
+        addSystemLog(`M-PESA ERROR: API failed to respond.`, 'error');
+        return { success: false, message: "Gateway Offline" };
     }
 }
 
@@ -277,8 +274,7 @@ async function triggerSTKPush(phoneNumber, amount) {
 app.get('/health', (req, res) => res.send('Martha Engine Online'));
 
 app.post('/callback/mpesa', (req, res) => {
-    addSystemLog(`M-PESA CALLBACK: Status received.`, 'success');
-    addSystemLog(`DATA: ${JSON.stringify(req.body).substring(0, 200)}`, 'info');
+    addSystemLog(`M-PESA CALLBACK RECEIVED.`, 'success');
     res.status(200).send('OK');
 });
 
@@ -286,7 +282,7 @@ app.post('/callback/mpesa', (req, res) => {
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog("SYSTEM: Configuration has been synchronized from Dashboard.", "info");
+    addSystemLog("SYSTEM: Configuration updated via Dashboard.", "info");
     res.json({ success: true });
 });
 app.get('/api/debug/system-logs', (req, res) => res.json(systemLogs));
@@ -294,13 +290,13 @@ app.get('/api/debug/system-logs', (req, res) => res.json(systemLogs));
 app.post('/api/test/gemini', async (req, res) => {
     try {
         const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
-        const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: "Test Pulse" });
+        const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: "Hello" });
         res.json({ success: !!response.text });
     } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
 app.post('/api/test/whatsapp', async (req, res) => {
-    const result = await sendWhatsApp(req.body.phoneNumber, "Martha AI Agent: Connectivity test successful. Engine is online.");
+    const result = await sendWhatsApp(req.body.phoneNumber, "Martha Connectivity Test: OK.");
     res.json(result);
 });
 
@@ -309,8 +305,29 @@ app.post('/api/test/mpesa', async (req, res) => {
     res.json(result);
 });
 
+/**
+ * WEBHOOK SIMULATOR
+ * Use this to trigger the AI logic manually from the dashboard.
+ */
+app.post('/api/test/trigger-webhook', async (req, res) => {
+    const { phoneNumber, text } = req.body;
+    addSystemLog(`SIMULATION: Manual trigger for ${phoneNumber}`, 'info');
+    
+    const mockPayload = {
+        event: "messages.upsert",
+        data: [{
+            key: { remoteJid: `${phoneNumber}@s.whatsapp.net`, fromMe: false },
+            message: { conversation: text }
+        }]
+    };
+    
+    // Pass it to the actual handler
+    req.body = mockPayload;
+    return webhookHandler(req, res);
+});
+
 // --- Static Serving ---
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => addSystemLog(`ENGINE: Operational on port ${PORT}`, 'success'));
+app.listen(PORT, '0.0.0.0', () => addSystemLog(`ENGINE LIVE: Port ${PORT}`, 'success'));
