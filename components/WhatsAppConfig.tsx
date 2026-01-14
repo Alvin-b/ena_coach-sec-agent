@@ -34,12 +34,18 @@ const WhatsAppConfig: React.FC = () => {
   const [terminalLogs, setTerminalLogs] = useState<any[]>([]);
   const [webhookUrl, setWebhookUrl] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [lastPulse, setLastPulse] = useState<Date | null>(null);
 
   const fetchLogs = async () => {
       try {
           const logRes = await fetch('/api/debug/system-logs');
           if (logRes.ok) {
               const logs = await logRes.json();
+              if (logs.length > 0 && terminalLogs.length > 0) {
+                  if (logs[0].timestamp !== terminalLogs[0].timestamp) {
+                      setLastPulse(new Date());
+                  }
+              }
               setTerminalLogs(logs);
           }
       } catch (e) { console.debug("Polling logs..."); }
@@ -49,7 +55,6 @@ const WhatsAppConfig: React.FC = () => {
       const currentOrigin = `${window.location.protocol}//${window.location.host}`;
       setWebhookUrl(`${currentOrigin}/webhook`);
       
-      // Suggest this URL for M-Pesa callback if empty
       if (!darajaCallbackUrl) {
           setDarajaCallbackUrl(`${currentOrigin}/callback/mpesa`);
       }
@@ -73,7 +78,7 @@ const WhatsAppConfig: React.FC = () => {
               setDarajaCallbackUrl(data.darajaCallbackUrl || `${currentOrigin}/callback/mpesa`);
           });
       
-      const poll = setInterval(fetchLogs, 5000);
+      const poll = setInterval(fetchLogs, 3000); // Polling every 3 seconds for tighter feedback
       return () => clearInterval(poll);
   }, []);
 
@@ -99,9 +104,9 @@ const WhatsAppConfig: React.FC = () => {
                 darajaCallbackUrl: darajaCallbackUrl.trim()
             })
         });
-        if (res.ok) alert("Production Engine successfully synchronized.");
-        else alert("Sync failed. Check console.");
-    } catch (e) { alert("Network error during sync."); }
+        if (res.ok) alert("Production Engine settings synchronized. Webhook is now active.");
+        else alert("Sync failed. Check terminal logs.");
+    } catch (e) { alert("Network error: Server is unreachable."); }
     finally { setIsSaving(false); }
   };
 
@@ -111,7 +116,7 @@ const WhatsAppConfig: React.FC = () => {
       let payload = {};
       if (type !== 'gemini') {
           if (!testPhone) {
-              setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: 'Phone required' } }));
+              setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: 'Enter phone' } }));
               return;
           }
           payload = { phoneNumber: testPhone };
@@ -130,11 +135,11 @@ const WhatsAppConfig: React.FC = () => {
               [type]: { 
                   loading: false, 
                   status: data.success ? 'success' : 'error', 
-                  msg: data.success ? 'Connected Successfully' : (data.message || 'Validation Failed')
+                  msg: data.success ? 'OK' : (data.message || 'Error')
               } 
           }));
       } catch (e: any) {
-          setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: 'Engine Offline' } }));
+          setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: 'Offline' } }));
       }
   };
 
@@ -146,164 +151,132 @@ const WhatsAppConfig: React.FC = () => {
   return (
     <div className="space-y-8 pb-20">
       
-      {/* Dynamic Webhook Info Card */}
-      <div className="bg-red-600 rounded-[2.5rem] p-10 text-white shadow-xl relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-white opacity-5 rounded-full -mr-20 -mt-20"></div>
-          <div className="relative z-10">
-              <h2 className="text-2xl font-black uppercase tracking-widest mb-4">Production Endpoint</h2>
-              <p className="text-red-100 text-sm max-w-xl mb-6 font-medium leading-relaxed">
-                  Use this URL in your Evolution API and M-Pesa portal for webhooks. 
-                  If you are using <strong>Render</strong>, ensure your "Render URL" matches this domain.
-              </p>
-              <div className="space-y-4">
-                  <div className="flex bg-black/20 p-1.5 rounded-2xl items-center border border-white/20">
-                      <div className="px-4 text-[10px] font-black uppercase tracking-tighter text-white/60">WhatsApp Webhook</div>
-                      <input 
-                        readOnly 
-                        value={webhookUrl} 
-                        className="flex-1 bg-transparent px-4 py-3 text-sm font-mono outline-none" 
-                      />
-                      <button 
-                        onClick={() => copyToClipboard(webhookUrl)}
-                        className="bg-white text-red-600 px-6 py-3 rounded-xl font-black text-xs hover:bg-gray-100 transition uppercase tracking-widest"
-                      >
-                        Copy
-                      </button>
+      {/* Endpoint Status Header */}
+      <div className="bg-white rounded-[2.5rem] p-1 shadow-sm border border-gray-100 overflow-hidden">
+          <div className="flex flex-col md:flex-row">
+              <div className="bg-red-600 p-10 text-white md:w-2/5 flex flex-col justify-center">
+                  <div className="flex items-center gap-3 mb-4">
+                      <div className={`w-3 h-3 rounded-full bg-white shadow-[0_0_10px_white] ${lastPulse ? 'animate-ping' : ''}`}></div>
+                      <h2 className="text-xl font-black uppercase tracking-widest">Server Pulse</h2>
                   </div>
-                  <div className="flex bg-black/20 p-1.5 rounded-2xl items-center border border-white/20">
-                      <div className="px-4 text-[10px] font-black uppercase tracking-tighter text-white/60">M-Pesa Callback</div>
-                      <input 
-                        readOnly 
-                        value={darajaCallbackUrl} 
-                        className="flex-1 bg-transparent px-4 py-3 text-sm font-mono outline-none" 
-                      />
-                      <button 
-                        onClick={() => copyToClipboard(darajaCallbackUrl)}
-                        className="bg-white text-red-600 px-6 py-3 rounded-xl font-black text-xs hover:bg-gray-100 transition uppercase tracking-widest"
-                      >
-                        Copy
-                      </button>
+                  <p className="text-red-100 text-sm font-medium leading-relaxed mb-4">
+                      Server is listening for webhooks. If traffic doesn't appear in the log below, verify your external gateway settings.
+                  </p>
+                  <div className="text-[10px] font-black uppercase tracking-tighter opacity-60">
+                      Last Detection: {lastPulse ? lastPulse.toLocaleTimeString() : 'Waiting for traffic...'}
+                  </div>
+              </div>
+              <div className="p-10 flex-1 space-y-6">
+                  <div>
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 block">WhatsApp Webhook Target</label>
+                      <div className="flex bg-gray-50 p-1.5 rounded-2xl items-center border border-gray-100">
+                          <input readOnly value={webhookUrl} className="flex-1 bg-transparent px-4 py-3 text-sm font-mono outline-none text-gray-700" />
+                          <button onClick={() => copyToClipboard(webhookUrl)} className="bg-red-600 text-white px-5 py-3 rounded-xl font-black text-xs uppercase hover:bg-red-700 transition">Copy</button>
+                      </div>
+                  </div>
+                  <div>
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 block">M-Pesa Callback URL</label>
+                      <div className="flex bg-gray-50 p-1.5 rounded-2xl items-center border border-gray-100">
+                          <input readOnly value={darajaCallbackUrl} className="flex-1 bg-transparent px-4 py-3 text-sm font-mono outline-none text-gray-700" />
+                          <button onClick={() => copyToClipboard(darajaCallbackUrl)} className="bg-gray-900 text-white px-5 py-3 rounded-xl font-black text-xs uppercase hover:bg-black transition">Copy</button>
+                      </div>
                   </div>
               </div>
           </div>
       </div>
 
       {/* Terminal Display */}
-      <div className="bg-[#0b0b0e] rounded-[2.5rem] p-8 h-80 flex flex-col border border-gray-800 shadow-2xl font-mono overflow-hidden">
+      <div className="bg-[#0b0b0e] rounded-[2.5rem] p-8 h-96 flex flex-col border border-gray-800 shadow-2xl font-mono overflow-hidden">
           <div className="flex justify-between items-center mb-6">
             <div className="flex items-center gap-4">
-                <span className="w-3 h-3 rounded-full bg-red-500 animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.8)]"></span>
-                <p className="text-gray-400 text-xs uppercase tracking-[0.3em] font-black">Agent Debug Feed</p>
+                <div className="flex space-x-1">
+                    <span className="w-2.5 h-2.5 rounded-full bg-red-500"></span>
+                    <span className="w-2.5 h-2.5 rounded-full bg-yellow-500"></span>
+                    <span className="w-2.5 h-2.5 rounded-full bg-green-500"></span>
+                </div>
+                <p className="text-gray-400 text-xs uppercase tracking-[0.3em] font-black ml-2">Live Activity Monitor</p>
             </div>
-            <button onClick={fetchLogs} className="text-[10px] text-gray-500 hover:text-white uppercase font-black"><i className="fas fa-sync-alt mr-2"></i> Sync Logs</button>
+            <div className="flex items-center gap-4">
+                {lastPulse && <span className="text-[10px] text-green-500 font-black uppercase animate-pulse">● Receiving Data</span>}
+                <button onClick={fetchLogs} className="text-[10px] text-gray-500 hover:text-white uppercase font-black"><i className="fas fa-sync-alt mr-2"></i> Refresh</button>
+            </div>
           </div>
-          <div className="flex-1 overflow-y-auto text-[11px] leading-relaxed space-y-3 scrollbar-hide flex flex-col-reverse">
+          <div className="flex-1 overflow-y-auto text-[11px] leading-relaxed space-y-2 scrollbar-hide">
               {terminalLogs.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center space-y-4">
-                    <i className="fas fa-satellite-dish text-gray-800 text-4xl animate-bounce"></i>
-                    <p className="text-gray-700 italic text-center">Monitoring traffic. Send a WhatsApp message or test M-Pesa to see events...</p>
+                <div className="h-full flex flex-col items-center justify-center space-y-4 opacity-20">
+                    <i className="fas fa-terminal text-5xl"></i>
+                    <p className="text-xs uppercase tracking-widest text-center">No traffic detected yet.<br/>Ensure your Webhook URL is saved in Evolution API.</p>
                 </div>
               ) : terminalLogs.map((log: any, i) => (
-                  <div key={i} className={`p-3 rounded-xl border ${
+                  <div key={i} className={`p-2.5 rounded-lg border flex items-start gap-4 ${
                     log.type === 'error' ? 'bg-red-950/20 text-red-400 border-red-900/30' : 
                     log.type === 'success' ? 'bg-green-950/20 text-green-400 border-green-900/30' : 
-                    'bg-gray-900 text-gray-300 border-gray-800'
+                    'bg-gray-900/40 text-gray-400 border-gray-800'
                   }`}>
-                      <span className="opacity-30 mr-3 text-[9px] uppercase">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                      <span className="font-bold">{log.msg}</span>
+                      <span className="opacity-40 font-bold shrink-0">{new Date(log.timestamp).toLocaleTimeString([], { hour12: false })}</span>
+                      <span className="font-mono">{log.msg}</span>
                   </div>
               ))}
           </div>
       </div>
 
-      {/* API Test Suite */}
-      <div className="bg-white rounded-[3rem] shadow-2xl border border-gray-100 overflow-hidden">
-          <div className="bg-gray-50 p-10 border-b border-gray-100">
-              <h2 className="text-2xl font-black text-gray-900 tracking-widest uppercase">Connectivity Suite</h2>
-              <p className="text-xs text-gray-500 mt-1 font-bold">Instantly verify if your credentials and webhooks are active.</p>
+      {/* Diagnostics Suite */}
+      <div className="bg-white rounded-[3rem] shadow-sm border border-gray-100 overflow-hidden">
+          <div className="p-10 border-b border-gray-50 flex flex-col md:flex-row justify-between items-center gap-6">
+              <div>
+                  <h2 className="text-2xl font-black text-gray-900 tracking-tight uppercase">Diagnostic Suite</h2>
+                  <p className="text-xs text-gray-500 font-bold mt-1">Check outgoing connection to your APIs.</p>
+              </div>
+              <div className="flex bg-gray-50 p-1.5 rounded-2xl items-center border border-gray-100 w-full md:w-64">
+                  <i className="fas fa-phone-alt ml-4 text-gray-400"></i>
+                  <input 
+                      type="text" 
+                      value={testPhone} 
+                      onChange={e => setTestPhone(e.target.value)} 
+                      placeholder="Test Phone..."
+                      className="flex-1 bg-transparent px-4 py-2 text-sm font-bold text-gray-900 outline-none"
+                  />
+              </div>
           </div>
-          <div className="p-10 space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-end">
-                <div className="space-y-3">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Test Phone (Must be 07... or 254...)</label>
-                    <input 
-                        type="text" 
-                        value={testPhone} 
-                        onChange={e => setTestPhone(e.target.value)} 
-                        placeholder="0712345678"
-                        className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-bold text-gray-900 outline-none focus:border-red-600 transition"
-                    />
-                </div>
-                <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-100">
-                    <p className="text-[10px] text-yellow-800 font-bold uppercase tracking-tight">
-                        <i className="fas fa-exclamation-triangle mr-2"></i> M-Pesa test costs 1 KES. WhatsApp test sends one message.
-                    </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  {/* Gemini Diagnostic */}
-                  <div className={`p-6 rounded-3xl border-2 transition ${testResults.gemini.status === 'success' ? 'border-green-100 bg-green-50' : 'border-gray-50 bg-gray-50'}`}>
-                      <h4 className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">Gemini API (AI)</h4>
+          <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-gray-50">
+              {['gemini', 'whatsapp', 'mpesa'].map((type) => (
+                  <div key={type} className="p-10 flex flex-col items-center text-center">
+                      <h4 className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-6">{type === 'mpesa' ? 'M-Pesa (Daraja)' : type === 'whatsapp' ? 'WhatsApp (Evolution)' : 'AI (Gemini)'}</h4>
                       <button 
-                        onClick={() => runDiagnostics('gemini')}
-                        disabled={testResults.gemini.loading}
-                        className="w-full py-3 bg-white border border-gray-200 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-gray-50 transition active:scale-95"
+                        onClick={() => runDiagnostics(type as any)}
+                        disabled={testResults[type].loading}
+                        className={`w-full py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition transform active:scale-95 ${
+                            testResults[type].status === 'success' ? 'bg-green-600 text-white shadow-green-200' :
+                            testResults[type].status === 'error' ? 'bg-red-600 text-white shadow-red-200' :
+                            'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        } shadow-lg`}
                       >
-                          {testResults.gemini.loading ? 'Pinging...' : 'Test AI Ping'}
+                          {testResults[type].loading ? <i className="fas fa-circle-notch fa-spin"></i> : `TEST ${type.toUpperCase()}`}
                       </button>
-                      {testResults.gemini.status && (
-                          <p className={`mt-3 text-[10px] font-bold text-center uppercase ${testResults.gemini.status === 'success' ? 'text-green-600' : 'text-red-600'}`}>
-                             {testResults.gemini.status === 'success' ? '✅ Operational' : `❌ ${testResults.gemini.msg}`}
+                      {testResults[type].msg && (
+                          <p className={`mt-4 text-[10px] font-black uppercase ${testResults[type].status === 'success' ? 'text-green-600' : 'text-red-500'}`}>
+                             {testResults[type].msg}
                           </p>
                       )}
                   </div>
-
-                  {/* WhatsApp Diagnostic */}
-                  <div className={`p-6 rounded-3xl border-2 transition ${testResults.whatsapp.status === 'success' ? 'border-green-100 bg-green-50' : 'border-gray-50 bg-gray-50'}`}>
-                      <h4 className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">WhatsApp (Evolution)</h4>
-                      <button 
-                        onClick={() => runDiagnostics('whatsapp')}
-                        disabled={testResults.whatsapp.loading}
-                        className="w-full py-3 bg-white border border-gray-200 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-gray-50 transition active:scale-95"
-                      >
-                          {testResults.whatsapp.loading ? 'Sending...' : 'Test WhatsApp'}
-                      </button>
-                      {testResults.whatsapp.status && (
-                          <p className={`mt-3 text-[10px] font-bold text-center uppercase ${testResults.whatsapp.status === 'success' ? 'text-green-600' : 'text-red-600'}`}>
-                             {testResults.whatsapp.status === 'success' ? '✅ Message Sent' : `❌ ${testResults.whatsapp.msg}`}
-                          </p>
-                      )}
-                  </div>
-
-                  {/* M-Pesa Diagnostic */}
-                  <div className={`p-6 rounded-3xl border-2 transition ${testResults.mpesa.status === 'success' ? 'border-green-100 bg-green-50' : 'border-gray-50 bg-gray-50'}`}>
-                      <h4 className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">M-Pesa (Daraja)</h4>
-                      <button 
-                        onClick={() => runDiagnostics('mpesa')}
-                        disabled={testResults.mpesa.loading}
-                        className="w-full py-3 bg-white border border-gray-200 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-gray-50 transition active:scale-95"
-                      >
-                          {testResults.mpesa.loading ? 'Pushing...' : 'Test STK Push'}
-                      </button>
-                      {testResults.mpesa.status && (
-                          <p className={`mt-3 text-[10px] font-bold text-center uppercase ${testResults.mpesa.status === 'success' ? 'text-green-600' : 'text-red-600'}`}>
-                             {testResults.mpesa.status === 'success' ? '✅ Prompt Triggered' : `❌ ${testResults.mpesa.msg}`}
-                          </p>
-                      )}
-                  </div>
-              </div>
+              ))}
           </div>
       </div>
 
-      {/* Config Hub */}
-      <div className="bg-white rounded-[3rem] shadow-2xl border border-gray-100 overflow-hidden">
+      {/* Configuration Hub */}
+      <div className="bg-white rounded-[3rem] shadow-sm border border-gray-100 overflow-hidden">
         <div className="bg-gray-950 p-10 text-white flex justify-between items-center">
             <div>
                 <h2 className="text-2xl font-black tracking-widest uppercase">Integration Hub</h2>
-                <p className="text-xs text-gray-400 mt-2 font-medium">Production Credentials & Gateway Settings</p>
+                <p className="text-xs text-gray-400 mt-2 font-medium">Production Credentials & Settings</p>
             </div>
-            <i className="fas fa-cog fa-spin text-gray-800 text-4xl"></i>
+            <button 
+                onClick={handleSaveAndSync} 
+                disabled={isSaving}
+                className="bg-red-600 hover:bg-red-700 text-white px-8 py-4 rounded-2xl text-xs font-black uppercase tracking-widest transition shadow-xl active:scale-95"
+            >
+                {isSaving ? <i className="fas fa-circle-notch fa-spin"></i> : 'Apply Changes'}
+            </button>
         </div>
 
         <div className="p-10 space-y-12">
@@ -356,12 +329,12 @@ const WhatsAppConfig: React.FC = () => {
                         <input type="password" value={darajaPasskey} onChange={e => setDarajaPasskey(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-sm font-mono outline-none" />
                     </div>
                     <div className="space-y-3">
-                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Shortcode (Paybill/Store)</label>
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Shortcode</label>
                         <input type="text" value={darajaShortcode} onChange={e => setDarajaShortcode(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-sm font-bold outline-none" />
                     </div>
                     <div className="space-y-3">
-                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Callback URL (Auto-calculated)</label>
-                        <input type="text" value={darajaCallbackUrl} onChange={e => setDarajaCallbackUrl(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-xs font-mono outline-none" />
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Store/Till Number</label>
+                        <input type="text" value={darajaStoreNumber} onChange={e => setDarajaStoreNumber(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-sm font-bold outline-none" />
                     </div>
                 </div>
             </section>
@@ -377,14 +350,6 @@ const WhatsAppConfig: React.FC = () => {
                     <input type="password" value={geminiKey} onChange={e => setGeminiKey(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-sm font-mono outline-none" />
                 </div>
             </section>
-
-            <button 
-                onClick={handleSaveAndSync} 
-                disabled={isSaving}
-                className="w-full py-8 bg-red-600 text-white font-black rounded-3xl hover:bg-red-700 shadow-2xl transition-all transform active:scale-95 uppercase tracking-[0.4em] text-sm"
-            >
-                {isSaving ? 'Deploying Changes...' : 'Save & Sync to Production'}
-            </button>
         </div>
       </div>
     </div>
