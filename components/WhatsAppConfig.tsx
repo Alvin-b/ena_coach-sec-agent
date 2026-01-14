@@ -12,7 +12,6 @@ const WhatsAppConfig: React.FC = () => {
   const [geminiKey, setGeminiKey] = useState('');
   
   // Daraja
-  const [darajaEnv, setDarajaEnv] = useState<'sandbox' | 'production'>('production');
   const [darajaKey, setDarajaKey] = useState('');
   const [darajaSecret, setDarajaSecret] = useState('');
   const [darajaPasskey, setDarajaPasskey] = useState('');
@@ -28,7 +27,10 @@ const WhatsAppConfig: React.FC = () => {
   const fetchData = async () => {
       try {
           const [l, r] = await Promise.all([fetch('/api/debug/system-logs'), fetch('/api/debug/raw-payloads')]);
-          if (l.ok) setTerminalLogs(await l.json());
+          if (l.ok) {
+              const logs = await l.json();
+              setTerminalLogs(logs);
+          }
           if (r.ok) setRawPayloads(await r.json());
       } catch (e) {}
   };
@@ -64,21 +66,27 @@ const WhatsAppConfig: React.FC = () => {
                 apiKey: geminiKey, darajaKey, darajaSecret, darajaPasskey, darajaShortcode
             })
         });
-        alert("Config Synced!");
-    } catch (e) { alert("Failed."); }
+        alert("Configuration Synchronized!");
+    } catch (e) { alert("Sync failed."); }
     setIsSaving(false);
   };
 
-  const generateCurl = () => {
-      return `curl -X POST ${webhookUrl} \\
--H "Content-Type: application/json" \\
--d '{
-  "event": "messages.upsert",
-  "data": {
-    "key": { "remoteJid": "254700000000@s.whatsapp.net", "fromMe": false },
-    "message": { "conversation": "Hello Martha" }
-  }
-}'`;
+  const runInternalTest = async () => {
+      try {
+          const res = await fetch('/webhook', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  event: "messages.upsert",
+                  data: {
+                      key: { remoteJid: "254123456789@s.whatsapp.net", fromMe: false },
+                      message: { conversation: "Internal Diagnostic Test" }
+                  }
+              })
+          });
+          if (res.ok) alert("Diagnostic Signal Sent! Check the log monitor below.");
+          else alert("Diagnostic failed: " + res.status);
+      } catch (e) { alert("Network Error during diagnostic."); }
   };
 
   const copy = (t: string) => {
@@ -87,78 +95,147 @@ const WhatsAppConfig: React.FC = () => {
   };
 
   return (
-    <div className="space-y-8 max-w-5xl mx-auto">
+    <div className="space-y-8 max-w-6xl mx-auto">
       
-      {/* Target URLs */}
-      <div className="bg-white rounded-[2rem] shadow-sm border border-gray-100 p-8 grid md:grid-cols-2 gap-8">
-          <div className="space-y-4">
-              <h2 className="text-sm font-black uppercase tracking-widest text-red-600">Webhook Destination</h2>
-              <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 flex items-center gap-4">
-                  <code className="text-xs font-mono flex-1 break-all">{webhookUrl}</code>
-                  <button onClick={() => copy(webhookUrl)} className="bg-red-600 text-white px-4 py-2 rounded-lg text-[10px] font-black uppercase">Copy</button>
+      {/* Webhook Connection Panel */}
+      <div className="bg-white rounded-[2rem] shadow-sm border border-gray-100 overflow-hidden">
+          <div className="p-8 grid md:grid-cols-2 gap-12">
+              <div className="space-y-6">
+                  <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center text-red-600">
+                          <i className="fas fa-link"></i>
+                      </div>
+                      <h2 className="text-xl font-black text-gray-900">Webhook Connection</h2>
+                  </div>
+                  <p className="text-sm text-gray-500 leading-relaxed">
+                      Copy the URL below and paste it into your <strong>Evolution API Dashboard</strong> under the "Webhooks" section for your instance.
+                  </p>
+                  <div className="bg-gray-50 p-5 rounded-2xl border border-gray-100 flex items-center gap-4">
+                      <code className="text-xs font-mono text-gray-600 flex-1 break-all select-all">{webhookUrl}</code>
+                      <button onClick={() => copy(webhookUrl)} className="bg-red-600 text-white px-5 py-3 rounded-xl text-[10px] font-black uppercase hover:bg-red-700 transition">Copy</button>
+                  </div>
+                  <div className="flex gap-4">
+                      <a href={webhookUrl} target="_blank" className="text-[10px] font-black uppercase text-gray-400 hover:text-red-600 flex items-center gap-2">
+                          <i className="fas fa-external-link-alt"></i> Test Path (GET)
+                      </a>
+                      <button onClick={runInternalTest} className="text-[10px] font-black uppercase text-red-600 hover:underline flex items-center gap-2">
+                          <i className="fas fa-vial"></i> Send Test POST
+                      </button>
+                  </div>
               </div>
-              <p className="text-[10px] text-gray-400 italic">Configure this URL in your Evolution API Dashboard.</p>
-          </div>
-          <div className="space-y-4">
-              <h2 className="text-sm font-black uppercase tracking-widest text-gray-800">Connection Diagnostic</h2>
-              <div className="bg-gray-900 p-4 rounded-xl text-green-400 font-mono text-[10px] relative">
-                  <pre className="overflow-x-auto">{generateCurl()}</pre>
-                  <button onClick={() => copy(generateCurl())} className="absolute top-2 right-2 text-white/50 hover:text-white"><i className="fas fa-copy"></i></button>
+
+              <div className="bg-gray-950 rounded-[2rem] p-8 text-white relative group overflow-hidden">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-red-600/10 blur-3xl rounded-full"></div>
+                  <h3 className="text-xs font-black uppercase tracking-widest text-red-500 mb-6">Diagnostic CURL</h3>
+                  <pre className="text-[10px] font-mono leading-relaxed text-gray-400 overflow-x-auto whitespace-pre-wrap">
+                      {`curl -X POST ${webhookUrl} \\\n-H "Content-Type: application/json" \\\n-d '{\n  "event": "messages.upsert",\n  "data": {\n    "key": { "remoteJid": "254...", "fromMe": false },\n    "message": { "conversation": "hi" }\n  }\n}'`}
+                  </pre>
+                  <button onClick={() => copy(`curl -X POST ${webhookUrl} -H "Content-Type: application/json" -d '{"event":"messages.upsert","data":{"key":{"remoteJid":"254000","fromMe":false},"message":{"conversation":"hi"}}}'`)} className="mt-6 text-[10px] font-black uppercase border border-white/20 px-4 py-2 rounded-lg hover:bg-white/10 transition">Copy Command</button>
               </div>
           </div>
       </div>
 
-      {/* Real-time Logs */}
-      <div className="bg-[#0b0b0e] rounded-[2rem] p-8 h-[450px] flex flex-col border border-gray-800 shadow-2xl overflow-hidden font-mono">
-          <div className="flex justify-between items-center mb-6">
-            <p className="text-gray-500 text-[10px] uppercase tracking-widest font-black">Signals & Activity</p>
-            <button onClick={() => setShowRaw(!showRaw)} className="text-[10px] text-red-500 hover:underline">{showRaw ? 'Hide Raw' : 'View Raw Signals'}</button>
+      {/* Activity Monitor */}
+      <div className="bg-[#0b0b0e] rounded-[2rem] border border-gray-800 shadow-2xl overflow-hidden flex flex-col h-[500px]">
+          <div className="bg-gray-900/50 p-6 border-b border-gray-800 flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                  <h3 className="text-xs font-black uppercase tracking-widest text-gray-400">Live Traffic Monitor</h3>
+              </div>
+              <button 
+                  onClick={() => setShowRaw(!showRaw)} 
+                  className={`text-[10px] font-black uppercase px-4 py-2 rounded-lg transition ${showRaw ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
+              >
+                  {showRaw ? 'Hide Payload' : 'Show Payload'}
+              </button>
           </div>
-          <div className="flex-1 overflow-y-auto space-y-2 scrollbar-hide">
+          
+          <div className="flex-1 overflow-y-auto p-6 space-y-3 font-mono scrollbar-hide">
               {showRaw ? (
-                  rawPayloads.map((p, i) => (
-                      <pre key={i} className="bg-gray-900 p-3 rounded-lg text-green-500 text-[9px] border border-gray-800">
-                          {JSON.stringify(p.data, null, 2)}
-                      </pre>
-                  ))
+                  rawPayloads.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-gray-700 text-xs">Waiting for raw signals...</div>
+                  ) : (
+                    rawPayloads.map((p, i) => (
+                        <div key={i} className="bg-gray-900 p-4 rounded-xl border border-gray-800 mb-4 animate-fade-in">
+                            <div className="text-[9px] text-gray-500 mb-2 border-b border-gray-800 pb-1">{new Date(p.timestamp).toLocaleString()}</div>
+                            <pre className="text-green-500 text-[10px] overflow-x-auto">{JSON.stringify(p.data, null, 2)}</pre>
+                        </div>
+                    ))
+                  )
               ) : (
-                  terminalLogs.map((log, i) => (
-                      <div key={i} className={`p-2 rounded-lg border text-[11px] ${log.type === 'error' ? 'bg-red-950/20 border-red-900 text-red-400' : 'bg-gray-900 border-gray-800 text-gray-400'}`}>
-                          <span className="opacity-40 mr-2">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                          {log.msg}
-                      </div>
-                  ))
+                  terminalLogs.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-gray-700 text-xs uppercase tracking-widest font-black">No activity detected yet</div>
+                  ) : (
+                    terminalLogs.map((log, i) => (
+                        <div key={i} className={`p-4 rounded-xl border flex gap-4 items-start animate-fade-in ${log.type === 'error' ? 'bg-red-950/20 border-red-900/50' : log.type === 'success' ? 'bg-green-950/10 border-green-900/30' : 'bg-gray-900/50 border-gray-800'}`}>
+                            <div className="text-[9px] text-gray-500 font-bold whitespace-nowrap pt-0.5">{new Date(log.timestamp).toLocaleTimeString()}</div>
+                            <div className={`text-[11px] font-medium ${log.type === 'error' ? 'text-red-400' : log.type === 'success' ? 'text-green-400' : 'text-gray-300'}`}>
+                                {log.msg}
+                            </div>
+                        </div>
+                    ))
+                  )
               )}
           </div>
       </div>
 
       {/* Settings Grid */}
       <div className="bg-white rounded-[2rem] shadow-sm border border-gray-100 overflow-hidden">
-          <div className="bg-gray-950 p-8 text-white flex justify-between items-center">
-              <h2 className="font-black uppercase tracking-widest">Core Integrations</h2>
-              <button onClick={handleSave} disabled={isSaving} className="bg-red-600 px-6 py-3 rounded-xl font-black text-xs uppercase shadow-xl active:scale-95 transition">
-                  {isSaving ? 'Saving...' : 'Sync & Restart'}
+          <div className="bg-gray-900 p-8 text-white flex justify-between items-center">
+              <div>
+                  <h2 className="font-black uppercase tracking-widest">Engine Parameters</h2>
+                  <p className="text-[10px] text-gray-500 font-bold uppercase mt-1">Configure API keys and instance tokens</p>
+              </div>
+              <button onClick={handleSave} disabled={isSaving} className="bg-red-600 px-8 py-4 rounded-2xl font-black text-xs uppercase shadow-xl hover:bg-red-700 active:scale-95 transition flex items-center gap-3">
+                  {isSaving ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-sync"></i>}
+                  {isSaving ? 'Syncing...' : 'Update Config'}
               </button>
           </div>
-          <div className="p-8 grid md:grid-cols-2 gap-8">
+          <div className="p-8 grid md:grid-cols-2 gap-10">
               <div className="space-y-6">
-                  <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest border-b pb-2">WhatsApp (Evolution)</h3>
-                  <input placeholder="API URL" value={apiUrl} onChange={e => setApiUrl(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none focus:border-red-600" />
-                  <input placeholder="Instance Name" value={instanceName} onChange={e => setInstanceName(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none focus:border-red-600" />
-                  <input type="password" placeholder="API Token" value={apiToken} onChange={e => setApiToken(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none" />
-              </div>
-              <div className="space-y-6">
-                  <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest border-b pb-2">Payments (Daraja)</h3>
-                  <input placeholder="Consumer Key" value={darajaKey} onChange={e => setDarajaKey(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none" />
-                  <input type="password" placeholder="Consumer Secret" value={darajaSecret} onChange={e => setDarajaSecret(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none" />
-                  <div className="grid grid-cols-2 gap-4">
-                    <input placeholder="Shortcode" value={darajaShortcode} onChange={e => setDarajaShortcode(e.target.value)} className="bg-gray-50 border p-4 rounded-xl text-sm outline-none" />
-                    <input placeholder="Passkey" value={darajaPasskey} onChange={e => setDarajaPasskey(e.target.value)} className="bg-gray-50 border p-4 rounded-xl text-sm outline-none" />
+                  <h3 className="text-[10px] font-black text-red-600 uppercase tracking-widest border-b border-red-50 pb-2">WhatsApp (Evolution)</h3>
+                  <div className="space-y-4">
+                      <label className="block text-[10px] font-black text-gray-400 uppercase">Evolution Base URL</label>
+                      <input placeholder="https://evolution.example.com" value={apiUrl} onChange={e => setApiUrl(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none focus:border-red-600 transition" />
+                  </div>
+                  <div className="space-y-4">
+                      <label className="block text-[10px] font-black text-gray-400 uppercase">Instance Name</label>
+                      <input placeholder="EnaCoach" value={instanceName} onChange={e => setInstanceName(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none focus:border-red-600" />
+                  </div>
+                  <div className="space-y-4">
+                      <label className="block text-[10px] font-black text-gray-400 uppercase">API Token</label>
+                      <input type="password" placeholder="Instance Global API Key" value={apiToken} onChange={e => setApiToken(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none focus:border-red-600" />
                   </div>
               </div>
-              <div className="md:col-span-2">
-                  <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest border-b pb-2 mb-4">AI Engine</h3>
-                  <input type="password" placeholder="Gemini API Key" value={geminiKey} onChange={e => setGeminiKey(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none focus:border-red-600" />
+
+              <div className="space-y-6">
+                  <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest border-b pb-2">Payments (Daraja)</h3>
+                  <div className="space-y-4">
+                      <label className="block text-[10px] font-black text-gray-400 uppercase">Consumer Key</label>
+                      <input placeholder="DARAJA_KEY" value={darajaKey} onChange={e => setDarajaKey(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none" />
+                  </div>
+                  <div className="space-y-4">
+                      <label className="block text-[10px] font-black text-gray-400 uppercase">Consumer Secret</label>
+                      <input type="password" placeholder="DARAJA_SECRET" value={darajaSecret} onChange={e => setDarajaSecret(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none" />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-4">
+                        <label className="block text-[10px] font-black text-gray-400 uppercase">Shortcode</label>
+                        <input value={darajaShortcode} onChange={e => setDarajaShortcode(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none" />
+                    </div>
+                    <div className="space-y-4">
+                        <label className="block text-[10px] font-black text-gray-400 uppercase">Passkey</label>
+                        <input type="password" value={darajaPasskey} onChange={e => setDarajaPasskey(e.target.value)} className="w-full bg-gray-50 border p-4 rounded-xl text-sm outline-none" />
+                    </div>
+                  </div>
+              </div>
+
+              <div className="md:col-span-2 pt-6">
+                  <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest border-b pb-2 mb-6">AI Agent Brain (Gemini)</h3>
+                  <div className="space-y-4">
+                      <label className="block text-[10px] font-black text-gray-400 uppercase">Gemini 3.0 API Key</label>
+                      <input type="password" placeholder="API Key from Google AI Studio" value={geminiKey} onChange={e => setGeminiKey(e.target.value)} className="w-full bg-gray-50 border p-5 rounded-2xl text-sm outline-none focus:border-red-600 border-2 border-transparent transition shadow-sm" />
+                  </div>
               </div>
           </div>
       </div>

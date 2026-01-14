@@ -48,11 +48,20 @@ function addSystemLog(msg, type = 'info', raw = null) {
 }
 
 const app = express();
-// Increased limits to handle large WhatsApp payloads
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// --- Daraja M-Pesa Core ---
+// --- PRE-PARSER LOGGING ---
+// This hits before Express tries to handle JSON. If Evolution API hits us, this WILL log.
+app.use((req, res, next) => {
+    if (req.path === '/webhook') {
+        addSystemLog(`TRAFFIC DETECTED: ${req.method} request to /webhook`, 'info');
+    }
+    next();
+});
+
+app.use(express.json({ limit: '20mb' }));
+app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+
+// --- Daraja M-Pesa Engine ---
 const getDarajaBaseUrl = () => runtimeConfig.darajaEnv === 'production' 
     ? 'https://api.safaricom.co.ke' 
     : 'https://sandbox.safaricom.co.ke';
@@ -82,9 +91,9 @@ async function getDarajaToken() {
 }
 
 async function triggerSTKPush(phoneNumber, amount) {
-    addSystemLog(`DARAJA: Initializing STK Push for ${phoneNumber}...`, 'info');
+    addSystemLog(`DARAJA: Attempting STK Push for ${phoneNumber}...`, 'info');
     const token = await getDarajaToken();
-    if (!token) return { success: false, message: "M-Pesa Auth Failed" };
+    if (!token) return { success: false, message: "Auth Failed" };
     
     const timestamp = getDarajaTimestamp();
     const shortcode = runtimeConfig.darajaShortcode.trim();
@@ -106,7 +115,7 @@ async function triggerSTKPush(phoneNumber, amount) {
         "PhoneNumber": formattedPhone,
         "CallBackURL": runtimeConfig.darajaCallbackUrl,
         "AccountReference": runtimeConfig.darajaAccountRef,
-        "TransactionDesc": "Bus Booking"
+        "TransactionDesc": "Ena Coach Booking"
     };
 
     try {
@@ -117,12 +126,11 @@ async function triggerSTKPush(phoneNumber, amount) {
         });
         const data = await response.json();
         if (data.ResponseCode === "0") {
-            addSystemLog(`DARAJA SUCCESS: Sent to ${formattedPhone}`, 'success');
+            addSystemLog(`DARAJA SENT: ${data.CheckoutRequestID}`, 'success');
             return { success: true };
         }
-        addSystemLog(`DARAJA REJECTED: ${data.ResponseDescription}`, 'error');
-        return { success: false };
-    } catch (error) { return { success: false }; }
+        return { success: false, message: data.ResponseDescription };
+    } catch (error) { return { success: false, message: "Network Error" }; }
 }
 
 // --- WhatsApp Outbound ---
@@ -148,8 +156,8 @@ async function handleAIProcess(phoneNumber, incomingText) {
         const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
         const response = await ai.models.generateContent({ 
             model: 'gemini-3-flash-preview', 
-            contents: `User: "${incomingText}". Martha: `,
-            config: { systemInstruction: "You are Martha, Ena Coach Assistant. Help with bookings. If user is ready to pay, mention M-Pesa." }
+            contents: `User says: "${incomingText}". Reply as Martha, assistant for Ena Coach.`,
+            config: { systemInstruction: "You are Martha, assistant for Ena Coach. Help with bus bookings. If user is ready to pay, mention M-Pesa." }
         });
 
         if (response.text) {
@@ -162,44 +170,58 @@ async function handleAIProcess(phoneNumber, incomingText) {
     } catch (e) { addSystemLog(`AI ERROR: ${e.message}`, 'error'); }
 }
 
-// --- Webhook Entry Point ---
-app.all('/webhook', async (req, res) => {
-    // 1. INSTANT ACKNOWLEDGEMENT (Prevents Evolution API from dropping connection)
-    res.sendStatus(200);
+// --- BULLETPROOF WEBHOOK HANDLER ---
+
+// Support GET for browser testing
+app.get('/webhook', (req, res) => {
+    addSystemLog("GET /webhook: Health Check from browser", "info");
+    res.status(200).send("<h1>Webhook is Active</h1><p>Send a POST request with JSON to process messages.</p>");
+});
+
+app.post('/webhook', (req, res) => {
+    // 1. INSTANT ACK (Prevents Timeouts)
+    res.status(200).send('OK');
 
     const payload = req.body;
-    if (!payload || Object.keys(payload).length === 0) return;
+    if (!payload || Object.keys(payload).length === 0) {
+        return addSystemLog("POST /webhook: Received empty body", "warning");
+    }
 
-    addSystemLog(`WEBHOOK SIGNAL RECEIVED`, 'info', payload);
+    addSystemLog(`SIGNAL ARRIVED: ${payload.event || 'No Event Name'}`, 'info', payload);
 
-    // 2. EXPLICIT EXTRACTION (Matches your confirmed payload)
+    // Evolution API Extraction
     let jid = null;
     let text = null;
     let fromMe = false;
 
-    if (payload.event === 'messages.upsert' && payload.data) {
+    // Check data object (Evolution Structure)
+    if (payload.data) {
         jid = payload.data.key?.remoteJid;
         fromMe = payload.data.key?.fromMe || false;
         text = payload.data.message?.conversation || payload.data.message?.extendedTextMessage?.text;
+    } 
+    // Fallback for flat structure
+    else {
+        jid = payload.remoteJid || payload.sender || payload.from;
+        text = payload.conversation || payload.text || payload.body;
+        fromMe = payload.fromMe || false;
     }
 
-    // 3. VALIDATION & PROCESSING
     if (jid && text && !fromMe) {
-        addSystemLog(`MATCH FOUND: "${text}" from ${jid}`, 'success');
+        addSystemLog(`PROCESSING MSG: "${text}" from ${jid}`, 'success');
         handleAIProcess(jid, text);
     } else {
-        const reason = fromMe ? "Loop (From Me)" : "Incomplete (JID/Text missing)";
-        addSystemLog(`SIGNAL DISCARDED: ${reason}`, 'warning');
+        const skipReason = fromMe ? "Message from self" : "Could not find JID or Text in payload";
+        addSystemLog(`SIGNAL IGNORED: ${skipReason}`, 'warning');
     }
 });
 
-// --- M-Pesa Callback ---
 app.post('/callback/mpesa', (req, res) => {
-    addSystemLog(`M-PESA CALLBACK`, 'success', req.body);
-    res.sendStatus(200);
+    addSystemLog(`DARAJA CALLBACK`, 'success', req.body);
+    res.status(200).send('OK');
 });
 
-// --- Admin Endpoints ---
+// Admin API
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
@@ -209,8 +231,8 @@ app.post('/api/config/update', (req, res) => {
 app.get('/api/debug/system-logs', (req, res) => res.json(systemLogs));
 app.get('/api/debug/raw-payloads', (req, res) => res.json(rawPayloads));
 
-// --- Static Site ---
+// Static
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => addSystemLog(`ENGINE LIVE ON PORT ${PORT}`, 'success'));
+app.listen(PORT, '0.0.0.0', () => addSystemLog(`ENGINE ONLINE: PORT ${PORT}`, 'success'));
