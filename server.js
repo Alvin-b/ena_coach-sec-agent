@@ -15,7 +15,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 10000;
 
-// --- Runtime Configuration (In-Memory for Dynamic Updates) ---
+// --- Runtime Configuration ---
 const runtimeConfig = {
     apiKey: (process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim(),
     evolutionUrl: (process.env.EVOLUTION_API_URL || '').trim(),
@@ -48,10 +48,10 @@ function addSystemLog(msg, type = 'info', raw = null) {
 }
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// --- M-Pesa Daraja Core Engine ---
+// --- Daraja M-Pesa Engine ---
 const getDarajaBaseUrl = () => runtimeConfig.darajaEnv === 'production' 
     ? 'https://api.safaricom.co.ke' 
     : 'https://sandbox.safaricom.co.ke';
@@ -69,34 +69,21 @@ function getDarajaTimestamp() {
 async function getDarajaToken() {
     const key = runtimeConfig.darajaKey.trim();
     const secret = runtimeConfig.darajaSecret.trim();
-    if (!key || !secret) {
-        addSystemLog("DARAJA: Missing Key/Secret in config", "error");
-        return null;
-    }
-
+    if (!key || !secret) return null;
     const auth = Buffer.from(`${key}:${secret}`).toString('base64');
     try {
         const response = await fetch(`${getDarajaBaseUrl()}/oauth/v1/generate?grant_type=client_credentials`, {
             headers: { 'Authorization': `Basic ${auth}` }
         });
         const data = await response.json();
-        if (data.access_token) {
-            addSystemLog("DARAJA: OAuth Token successfully refreshed", "success");
-            return data.access_token;
-        }
-        addSystemLog(`DARAJA AUTH FAILED: ${JSON.stringify(data)}`, "error");
-        return null;
-    } catch (error) { 
-        addSystemLog(`DARAJA AUTH NETWORK ERROR: ${error.message}`, 'error');
-        return null; 
-    }
+        return data.access_token || null;
+    } catch (error) { return null; }
 }
 
 async function triggerSTKPush(phoneNumber, amount) {
-    addSystemLog(`DARAJA: Initializing STK Push for ${phoneNumber} (KES ${amount})...`, 'info');
-    
+    addSystemLog(`DARAJA: Attempting STK Push for ${phoneNumber}...`, 'info');
     const token = await getDarajaToken();
-    if (!token) return { success: false, message: "Authentication Failed" };
+    if (!token) return { success: false, message: "Auth Failed" };
     
     const timestamp = getDarajaTimestamp();
     const shortcode = runtimeConfig.darajaShortcode.trim();
@@ -118,98 +105,68 @@ async function triggerSTKPush(phoneNumber, amount) {
         "PhoneNumber": formattedPhone,
         "CallBackURL": runtimeConfig.darajaCallbackUrl,
         "AccountReference": runtimeConfig.darajaAccountRef,
-        "TransactionDesc": "Bus Ticket Booking"
+        "TransactionDesc": "Ena Coach Booking"
     };
 
     try {
         const response = await fetch(`${getDarajaBaseUrl()}/mpesa/stkpush/v1/processrequest`, {
             method: 'POST',
-            headers: { 
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
         const data = await response.json();
         if (data.ResponseCode === "0") {
-            addSystemLog(`DARAJA SUCCESS: CheckoutID ${data.CheckoutRequestID} sent to ${formattedPhone}`, 'success');
-            return { success: true, checkoutId: data.CheckoutRequestID };
-        } else {
-            addSystemLog(`DARAJA REJECTED: ${data.ResponseDescription}`, 'error');
-            return { success: false, message: data.ResponseDescription };
+            addSystemLog(`DARAJA SENT: ${data.CheckoutRequestID}`, 'success');
+            return { success: true };
         }
-    } catch (error) {
-        addSystemLog(`DARAJA STK ERROR: ${error.message}`, 'error');
-        return { success: false, message: "Network Error" };
-    }
+        return { success: false, message: data.ResponseDescription };
+    } catch (error) { return { success: false, message: "Network Error" }; }
 }
 
-// --- WhatsApp Outbound Logic ---
+// --- WhatsApp Outbound ---
 async function sendWhatsApp(jid, text) {
-    if (!runtimeConfig.evolutionUrl || !runtimeConfig.evolutionToken) {
-        addSystemLog("OUTBOUND ERROR: WhatsApp credentials missing", "error");
-        return;
-    }
-    
+    if (!runtimeConfig.evolutionUrl || !runtimeConfig.evolutionToken) return;
     const cleanUrl = runtimeConfig.evolutionUrl.replace(/\/$/, '');
-    let cleanNumber = jid.toString().replace(/[^0-9]/g, '');
-    if (cleanNumber.startsWith('0')) cleanNumber = '254' + cleanNumber.substring(1);
-    else if (cleanNumber.startsWith('7')) cleanNumber = '254' + cleanNumber;
-    
-    const instance = encodeURIComponent(runtimeConfig.instanceName.trim());
-    const targetUrl = `${cleanUrl}/message/sendText/${instance}`;
+    const cleanJid = jid.split('@')[0].replace(/[^0-9]/g, '');
+    const targetUrl = `${cleanUrl}/message/sendText/${runtimeConfig.instanceName}`;
 
     try {
-        const response = await fetch(targetUrl, {
+        await fetch(targetUrl, {
             method: 'POST',
-            headers: { 
-                'Content-Type': 'application/json', 
-                'apikey': runtimeConfig.evolutionToken.trim() 
-            },
-            body: JSON.stringify({ number: cleanNumber, text: text })
+            headers: { 'Content-Type': 'application/json', 'apikey': runtimeConfig.evolutionToken },
+            body: JSON.stringify({ number: cleanJid, text: text })
         });
-        if (response.ok) addSystemLog(`REPLY SENT: To ${cleanNumber}`, 'success');
-        else addSystemLog(`REPLY FAILED: Evolution API status ${response.status}`, 'error');
-    } catch(e) { 
-        addSystemLog(`WHATSAPP NETWORK ERROR: ${e.message}`, 'error'); 
-    }
+        addSystemLog(`REPLY SENT to ${cleanJid}`, 'success');
+    } catch(e) { addSystemLog(`REPLY ERROR: ${e.message}`, 'error'); }
 }
 
 // --- AI Processing ---
 async function handleAIProcess(phoneNumber, incomingText) {
     try {
-        if (!runtimeConfig.apiKey) return addSystemLog("AI HALTED: Gemini API Key missing", "error");
-        
         const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
         const response = await ai.models.generateContent({ 
             model: 'gemini-3-flash-preview', 
-            contents: `User says: "${incomingText}". Reply as Martha, the Ena Coach assistant.`,
-            config: { 
-                systemInstruction: "You are Martha, the Ena Coach AI Assistant. Help users book buses. If a user chooses a destination and is ready to pay, mention you are sending an M-Pesa prompt. Keep replies helpful and short." 
-            }
+            contents: incomingText,
+            config: { systemInstruction: "You are Martha, assistant for Ena Coach. Help with bus bookings. If user is ready to pay, mention M-Pesa." }
         });
 
         if (response.text) {
             await sendWhatsApp(phoneNumber, response.text);
-            
-            // Side-effect: If the AI mentioned M-Pesa or prompt, trigger the real STK push
-            const lowerText = response.text.toLowerCase();
-            if (lowerText.includes('m-pesa') || lowerText.includes('prompt') || lowerText.includes('stk')) {
-                // Default amount 1 for testing
+            if (response.text.toLowerCase().includes('m-pesa') || response.text.toLowerCase().includes('prompt')) {
                 await triggerSTKPush(phoneNumber, 1);
             }
         }
-    } catch (e) { 
-        addSystemLog(`AI ERROR: ${e.message}`, 'error'); 
-    }
+    } catch (e) { addSystemLog(`AI ERROR: ${e.message}`, 'error'); }
 }
 
-// --- Webhook Harvester (Recursive search for JID and Text) ---
+// --- Precision Webhook Harvester ---
 function harvest(obj, keys) {
     if (!obj || typeof obj !== 'object') return null;
+    // Check local keys first
     for (const key of keys) {
         if (obj[key] && typeof obj[key] === 'string' && obj[key].length > 1) return obj[key];
     }
+    // Deep dive
     for (const key in obj) {
         const found = harvest(obj[key], keys);
         if (found) return found;
@@ -218,75 +175,52 @@ function harvest(obj, keys) {
 }
 
 const webhookHandler = async (req, res) => {
-    // Acknowledge Evolution API instantly
     res.status(200).send('OK');
-
     const payload = req.body;
-    if (!payload || Object.keys(payload).length === 0) return;
+    if (!payload || Object.keys(payload).length === 0) {
+        return addSystemLog("SIGNAL DETECTED: Empty or non-JSON body", "warning");
+    }
 
-    addSystemLog(`INBOUND: Signal detected`, 'info', payload);
+    addSystemLog(`SIGNAL REACHED SERVER: Keys [${Object.keys(payload).join(', ')}]`, 'info', payload);
 
-    const jid = harvest(payload, ['remoteJid', 'from', 'sender', 'number', 'participant', 'jid']);
-    const text = harvest(payload, ['conversation', 'text', 'body', 'content', 'caption', 'message']);
+    // Precise extraction for Evolution API
+    const jid = harvest(payload, ['remoteJid', 'sender', 'from', 'number']);
+    const text = harvest(payload, ['conversation', 'text', 'body', 'message']);
 
-    const isFromMe = (obj) => {
+    // Check if it's from the bot itself
+    const isBot = (obj) => {
         if (!obj || typeof obj !== 'object') return false;
         if (obj.fromMe === true) return true;
-        for (const k in obj) if (isFromMe(obj[k])) return true;
+        for (const k in obj) if (isBot(obj[k])) return true;
         return false;
     };
 
-    if (jid && text && !isFromMe(payload)) {
-        addSystemLog(`MSG: "${text}" from ${jid}`, 'success');
+    if (jid && text && !isBot(payload)) {
+        addSystemLog(`MSG VALIDATED: "${text}" from ${jid}`, 'success');
         handleAIProcess(jid, text);
+    } else {
+        addSystemLog(`MSG DISCARDED: JID or Text missing, or message is from bot.`, 'warning');
     }
 };
 
 app.all('/webhook', webhookHandler);
 
-// --- M-Pesa Callback ---
 app.post('/callback/mpesa', (req, res) => {
-    addSystemLog(`DARAJA CALLBACK RECEIVED`, 'success', req.body);
-    // In a real app, you'd parse req.body.stkCallback to update ticket status
+    addSystemLog(`DARAJA CALLBACK`, 'success', req.body);
     res.status(200).send('OK');
 });
 
-// --- API Endpoints ---
+// API Routes
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog("SYSTEM: Configuration updated by admin.", "info");
     res.json({ success: true });
 });
 app.get('/api/debug/system-logs', (req, res) => res.json(systemLogs));
 app.get('/api/debug/raw-payloads', (req, res) => res.json(rawPayloads));
 
-// Test Diagnostics
-app.post('/api/test/gemini', async (req, res) => {
-    try {
-        const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
-        const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: "Test" });
-        res.json({ success: !!response.text });
-    } catch (e) { res.json({ success: false, message: e.message }); }
-});
-
-app.post('/api/test/whatsapp', async (req, res) => {
-    await sendWhatsApp(req.body.phoneNumber, "Martha Diagnostic: Connection verified.");
-    res.json({ success: true });
-});
-
-app.post('/api/test/trigger-webhook', async (req, res) => {
-    req.body = {
-        data: { 
-            key: { remoteJid: `${req.body.phoneNumber}@s.whatsapp.net`, fromMe: false },
-            message: { conversation: req.body.text }
-        }
-    };
-    return webhookHandler(req, res);
-});
-
-// Serve Frontend
+// Static
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => addSystemLog(`SERVER ONLINE: Listening on port ${PORT}`, 'success'));
+app.listen(PORT, '0.0.0.0', () => addSystemLog(`ENGINE ONLINE: PORT ${PORT}`, 'success'));
