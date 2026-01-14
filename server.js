@@ -109,10 +109,12 @@ async function sendWhatsApp(jid, text) {
 // --- AI Response Logic ---
 async function handleAIProcess(phoneNumber, incomingText) {
     try {
-        if (!runtimeConfig.apiKey) return;
+        if (!runtimeConfig.apiKey) {
+            addSystemLog("AI Warning: Gemini API Key not found in Engine.", "error");
+            return;
+        }
         const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
         
-        // Simpler context-free response for the direct webhook test
         const response = await ai.models.generateContent({ 
             model: 'gemini-3-flash-preview', 
             contents: `User said: "${incomingText}". You are Martha from Ena Coach. Reply concisely.`,
@@ -130,32 +132,42 @@ async function handleAIProcess(phoneNumber, incomingText) {
     }
 }
 
-// --- WhatsApp Webhook Endpoint ---
+// --- WhatsApp Webhook Endpoint (High Resilience) ---
 app.post('/webhook', async (req, res) => {
-    const { type, data } = req.body;
-    
-    // Log all incoming webhooks for debugging
-    console.log(`[WEBHOOK] Received type: ${type}`);
+    // Evolution API can send either 'event' or 'type'
+    const eventType = req.body.event || req.body.type;
+    const data = req.body.data;
+    const instance = req.body.instance || "Unknown";
 
-    if (type === 'messages.upsert' && data?.message) {
-        const remoteJid = data.key.remoteJid;
-        const fromMe = data.key.fromMe;
-        const pushName = data.pushName || 'Customer';
+    // Immediate confirmation in dashboard
+    addSystemLog(`Webhook Received: ${eventType || 'Unknown'} from Instance: ${instance}`, 'info');
+
+    // Handle incoming messages
+    if ((eventType === 'messages.upsert' || eventType === 'MESSAGES_UPSERT') && data) {
+        // Handle potential array or single object
+        const messageObj = Array.isArray(data) ? data[0] : data;
         
-        // Extract text from standard conversation or extended text messages
-        const text = data.message.conversation || data.message.extendedTextMessage?.text;
-
-        if (text && !fromMe) {
-            addSystemLog(`WhatsApp Msg from ${pushName} (${remoteJid}): "${text}"`, 'success');
+        if (messageObj?.key) {
+            const remoteJid = messageObj.key.remoteJid;
+            const fromMe = messageObj.key.fromMe;
+            const pushName = messageObj.pushName || 'Customer';
             
-            // Trigger AI response in background
-            handleAIProcess(remoteJid, text);
+            // Extract text from various possible locations in the message object
+            const msgBody = messageObj.message;
+            const text = msgBody?.conversation || 
+                         msgBody?.extendedTextMessage?.text || 
+                         msgBody?.imageMessage?.caption || 
+                         msgBody?.videoMessage?.caption;
+
+            if (text && !fromMe) {
+                addSystemLog(`WhatsApp Msg: [${pushName}] "${text}"`, 'success');
+                // Trigger AI response loop
+                handleAIProcess(remoteJid, text);
+            }
         }
-    } else {
-        // Log other event types (status updates, etc)
-        addSystemLog(`Webhook Event: ${type}`, 'info');
     }
     
+    // Always return 200 to Evolution API to prevent retries/blocking
     res.status(200).send('OK');
 });
 
