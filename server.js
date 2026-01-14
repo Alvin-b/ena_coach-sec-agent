@@ -24,11 +24,11 @@ const runtimeConfig = {
     
     darajaEnv: 'production', 
     darajaType: 'Till', 
-    darajaKey: 'vz2udWubzGyYSTzkEWGo7wM6MTP2aK8uc6GnoPHAMuxgTB6J',
-    darajaSecret: 'bW5AKfCRXIqQ1DyAMriKVAKkUULaQl8FLdPA8SadMqiylrwQPZR8tJAAS0mVG1rm',
-    darajaPasskey: '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f', 
-    darajaShortcode: '5512238', 
-    darajaStoreNumber: '4159923', 
+    darajaKey: (process.env.DARAJA_KEY || 'vz2udWubzGyYSTzkEWGo7wM6MTP2aK8uc6GnoPHAMuxgTB6J').trim(),
+    darajaSecret: (process.env.DARAJA_SECRET || 'bW5AKfCRXIqQ1DyAMriKVAKkUULaQl8FLdPA8SadMqiylrwQPZR8tJAAS0mVG1rm').trim(),
+    darajaPasskey: (process.env.DARAJA_PASSKEY || '22d216ef018698320b41daf10b735852007d872e539b1bddd061528b922b8c4f').trim(), 
+    darajaShortcode: (process.env.DARAJA_SHORTCODE || '5512238').trim(), 
+    darajaStoreNumber: (process.env.DARAJA_STORE || '4159923').trim(), 
     darajaAccountRef: 'ENA_COACH',
     darajaCallbackUrl: 'https://ena-coach-sec-agent.onrender.com/callback/mpesa',
 };
@@ -48,20 +48,96 @@ function addSystemLog(msg, type = 'info', raw = null) {
 }
 
 const app = express();
-
-// --- RESILIENT MIDDLEWARE ---
-// Use standard JSON and URLencoded parsing with generous limits
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Global Request Sniffer
-app.use((req, res, next) => {
-    const isAsset = req.url.match(/\.(js|css|png|jpg|svg|ico|map)$/) || req.url.startsWith('/@');
-    if (!isAsset && !req.url.startsWith('/api/debug')) {
-        addSystemLog(`TRAFFIC: ${req.method} ${req.url}`, 'info');
+// --- M-Pesa Daraja Logic ---
+const getDarajaBaseUrl = () => runtimeConfig.darajaEnv === 'production' 
+    ? 'https://api.safaricom.co.ke' 
+    : 'https://sandbox.safaricom.co.ke';
+
+function getDarajaTimestamp() {
+    const now = new Date();
+    return now.getFullYear() +
+        ('0' + (now.getMonth() + 1)).slice(-2) +
+        ('0' + now.getDate()).slice(-2) +
+        ('0' + now.getHours()).slice(-2) +
+        ('0' + now.getMinutes()).slice(-2) +
+        ('0' + now.getSeconds()).slice(-2);
+}
+
+async function getDarajaToken() {
+    const key = runtimeConfig.darajaKey.trim();
+    const secret = runtimeConfig.darajaSecret.trim();
+    if (!key || !secret) return null;
+
+    const auth = Buffer.from(`${key}:${secret}`).toString('base64');
+    try {
+        const response = await fetch(`${getDarajaBaseUrl()}/oauth/v1/generate?grant_type=client_credentials`, {
+            headers: { 'Authorization': `Basic ${auth}` }
+        });
+        const data = await response.json();
+        return data.access_token || null;
+    } catch (error) { 
+        addSystemLog(`DARAJA AUTH ERROR: ${error.message}`, 'error');
+        return null; 
     }
-    next();
-});
+}
+
+async function triggerSTKPush(phoneNumber, amount) {
+    addSystemLog(`DARAJA: Initializing STK Push for ${phoneNumber} (KES ${amount})...`, 'info');
+    
+    const token = await getDarajaToken();
+    if (!token) {
+        addSystemLog("DARAJA ERROR: Failed to obtain OAuth token.", "error");
+        return { success: false, message: "Auth Failed" };
+    }
+    
+    const timestamp = getDarajaTimestamp();
+    const shortcode = runtimeConfig.darajaShortcode.trim();
+    const passkey = runtimeConfig.darajaPasskey.trim();
+    const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
+    
+    let formattedPhone = phoneNumber.toString().replace(/[^0-9]/g, '');
+    if (formattedPhone.startsWith('0')) formattedPhone = '254' + formattedPhone.substring(1);
+    else if (formattedPhone.startsWith('7')) formattedPhone = '254' + formattedPhone;
+
+    const payload = {
+        "BusinessShortCode": shortcode,
+        "Password": password,
+        "Timestamp": timestamp,
+        "TransactionType": runtimeConfig.darajaType === 'Till' ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline',
+        "Amount": Math.ceil(amount),
+        "PartyA": formattedPhone,
+        "PartyB": runtimeConfig.darajaType === 'Till' ? runtimeConfig.darajaStoreNumber : shortcode,
+        "PhoneNumber": formattedPhone,
+        "CallBackURL": runtimeConfig.darajaCallbackUrl,
+        "AccountReference": runtimeConfig.darajaAccountRef,
+        "TransactionDesc": "Bus Booking Payment"
+    };
+
+    try {
+        const response = await fetch(`${getDarajaBaseUrl()}/mpesa/stkpush/v1/processrequest`, {
+            method: 'POST',
+            headers: { 
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (data.ResponseCode === "0") {
+            addSystemLog(`DARAJA SUCCESS: STK Push sent to ${formattedPhone}`, 'success');
+            return { success: true, checkoutId: data.CheckoutRequestID };
+        } else {
+            addSystemLog(`DARAJA FAILED: ${data.ResponseDescription}`, 'error');
+            return { success: false, message: data.ResponseDescription };
+        }
+    } catch (error) {
+        addSystemLog(`DARAJA NETWORK ERROR: ${error.message}`, 'error');
+        return { success: false, message: "Network Error" };
+    }
+}
 
 // --- WhatsApp Logic ---
 async function sendWhatsApp(jid, text) {
@@ -94,31 +170,41 @@ async function sendWhatsApp(jid, text) {
     }
 }
 
+// --- AI Engine ---
 async function handleAIProcess(phoneNumber, incomingText) {
     try {
         if (!runtimeConfig.apiKey) return addSystemLog("AI HALTED: No API Key", "error");
         
+        // Check for payment intent manually for extra speed
+        const lowerText = incomingText.toLowerCase();
+        if (lowerText.includes('pay') || lowerText.includes('book') || lowerText.includes('confirm')) {
+            // Optional: You could use Gemini here to extract amount, or use a default if it's a fixed route.
+            // For testing, we'll let the AI decide.
+        }
+
         const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
         const response = await ai.models.generateContent({ 
             model: 'gemini-3-flash-preview', 
             contents: `User: "${incomingText}". Reply as Martha, the Ena Coach assistant.`,
             config: { 
-                systemInstruction: "You are Martha from Ena Coach. Help with bus bookings. Be extremely brief and helpful." 
+                systemInstruction: "You are Martha from Ena Coach. Help with bus bookings. If a user is ready to pay, tell them you are sending an M-Pesa prompt. Keep it brief." 
             }
         });
 
         if (response.text) {
             await sendWhatsApp(phoneNumber, response.text);
+            
+            // Side-effect: If the reply mentions sending a prompt, trigger it.
+            if (response.text.toLowerCase().includes('prompt') || response.text.toLowerCase().includes('m-pesa')) {
+                await triggerSTKPush(phoneNumber, 1); // For testing, amount is KES 1
+            }
         }
     } catch (e) { 
         addSystemLog(`AI ENGINE ERROR: ${e.message}`, 'error'); 
     }
 }
 
-/**
- * RECURSIVE VALUE HARVESTER
- * Crawls any object looking for specific keys and returns the first meaningful string found.
- */
+// --- ULTRA-PERMISSIVE RECURSIVE PARSER ---
 function harvest(obj, keys) {
     if (!obj || typeof obj !== 'object') return null;
     for (const key of keys) {
@@ -131,26 +217,18 @@ function harvest(obj, keys) {
     return null;
 }
 
-// --- TEST-READY ULTRA WEBHOOK ---
 const webhookHandler = async (req, res) => {
-    // RULE 1: Respond 200 OK instantly. Never wait for AI.
+    // Respond 200 OK instantly for Evolution API
     res.status(200).send('OK');
 
     const payload = req.body;
     if (!payload || Object.keys(payload).length === 0) return;
 
-    addSystemLog(`SIGNAL RECEIVED: Keys: [${Object.keys(payload).join(', ')}]`, 'info', payload);
+    addSystemLog(`SIGNAL: Keys [${Object.keys(payload).join(', ')}]`, 'info', payload);
 
-    if (req.method === 'GET') return;
-
-    // RULE 2: Deep Harvest
-    // Look for anything that resembles a JID or Number
     const jid = harvest(payload, ['remoteJid', 'from', 'sender', 'number', 'participant', 'jid']);
-    
-    // Look for anything that resembles a Message Body
     const text = harvest(payload, ['conversation', 'text', 'body', 'content', 'caption', 'message']);
 
-    // Check if message is from the bot itself (to avoid infinite loops)
     const isFromMe = (obj) => {
         if (!obj || typeof obj !== 'object') return false;
         if (obj.fromMe === true) return true;
@@ -158,18 +236,9 @@ const webhookHandler = async (req, res) => {
         return false;
     };
 
-    if (jid && text) {
-        if (isFromMe(payload)) {
-            addSystemLog(`SIGNAL IGNORED: Outbound message detected.`, 'info');
-            return;
-        }
-
-        addSystemLog(`MESSAGE EXTRACTED: "${text}" from ${jid}`, 'success');
-        
-        // Background AI processing
+    if (jid && text && !isFromMe(payload)) {
+        addSystemLog(`MSG DETECTED: "${text}" from ${jid}`, 'success');
         handleAIProcess(jid, text);
-    } else {
-        addSystemLog("SIGNAL INCOMPLETE: No recognizable JID or Text found in the packet.", "error");
     }
 };
 
@@ -177,7 +246,8 @@ app.all('/webhook', webhookHandler);
 
 // --- M-Pesa Callback ---
 app.post('/callback/mpesa', (req, res) => {
-    addSystemLog(`M-PESA SIGNAL: Callback reached server.`, 'success', req.body);
+    addSystemLog(`M-PESA SIGNAL RECEIVED`, 'success', req.body);
+    // In production, parse stkCallback to notify user of success/fail
     res.status(200).send('OK');
 });
 
@@ -185,12 +255,13 @@ app.post('/callback/mpesa', (req, res) => {
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog("SYSTEM: Config synchronized.", "info");
+    addSystemLog("SYSTEM: Configuration updated.", "info");
     res.json({ success: true });
 });
 app.get('/api/debug/system-logs', (req, res) => res.json(systemLogs));
 app.get('/api/debug/raw-payloads', (req, res) => res.json(rawPayloads));
 
+// Test Diagnostics
 app.post('/api/test/gemini', async (req, res) => {
     try {
         const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
@@ -200,21 +271,22 @@ app.post('/api/test/gemini', async (req, res) => {
 });
 
 app.post('/api/test/whatsapp', async (req, res) => {
-    await sendWhatsApp(req.body.phoneNumber, "Martha System Check: Outbound engine is online.");
+    await sendWhatsApp(req.body.phoneNumber, "Martha Connectivity Check: Success.");
     res.json({ success: true });
 });
 
 app.post('/api/test/trigger-webhook', async (req, res) => {
-    const { phoneNumber, text } = req.body;
     req.body = {
-        event: "messages.upsert",
-        data: { key: { remoteJid: `${phoneNumber}@s.whatsapp.net`, fromMe: false }, message: { conversation: text } }
+        data: { 
+            key: { remoteJid: `${req.body.phoneNumber}@s.whatsapp.net`, fromMe: false },
+            message: { conversation: req.body.text }
+        }
     };
     return webhookHandler(req, res);
 });
 
-// Static Serving
+// Static Hosting
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => addSystemLog(`MARTHA ENGINE: Operational on port ${PORT}`, 'success'));
+app.listen(PORT, '0.0.0.0', () => addSystemLog(`ENGINE OPERATIONAL: Port ${PORT}`, 'success'));
