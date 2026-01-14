@@ -84,7 +84,7 @@ async function sendWhatsApp(jid, text) {
             headers: { 
                 'Content-Type': 'application/json', 
                 'apikey': runtimeConfig.evolutionToken.trim(),
-                'api-key': runtimeConfig.evolutionToken.trim() // Redundant header for compatibility
+                'api-key': runtimeConfig.evolutionToken.trim() 
             },
             body: JSON.stringify({ 
                 number: cleanJid, 
@@ -99,15 +99,65 @@ async function sendWhatsApp(jid, text) {
             if (response.ok) return { success: true };
             return { success: false, message: data.message || `Status ${response.status}` };
         } else {
-            const textErr = await response.text();
-            // If it's a 404, the path might be different on this server
-            if (response.status === 404) return { success: false, message: "404: Instance path incorrect. Verify Instance Name." };
             return { success: false, message: `Server Error: ${response.status}` };
         }
     } catch(e) { 
         return { success: false, message: `Network Error: ${e.message}` }; 
     }
 }
+
+// --- AI Response Logic ---
+async function handleAIProcess(phoneNumber, incomingText) {
+    try {
+        if (!runtimeConfig.apiKey) return;
+        const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
+        
+        // Simpler context-free response for the direct webhook test
+        const response = await ai.models.generateContent({ 
+            model: 'gemini-3-flash-preview', 
+            contents: `User said: "${incomingText}". You are Martha from Ena Coach. Reply concisely.`,
+            config: {
+                systemInstruction: "You are Martha, the Ena Coach AI. Be helpful, professional, and concise. You assist with bus bookings in Kenya."
+            }
+        });
+
+        if (response.text) {
+            await sendWhatsApp(phoneNumber, response.text);
+            addSystemLog(`Replied to ${phoneNumber} via AI`, 'success');
+        }
+    } catch (e) {
+        addSystemLog(`AI Processing Failed: ${e.message}`, 'error');
+    }
+}
+
+// --- WhatsApp Webhook Endpoint ---
+app.post('/webhook', async (req, res) => {
+    const { type, data } = req.body;
+    
+    // Log all incoming webhooks for debugging
+    console.log(`[WEBHOOK] Received type: ${type}`);
+
+    if (type === 'messages.upsert' && data?.message) {
+        const remoteJid = data.key.remoteJid;
+        const fromMe = data.key.fromMe;
+        const pushName = data.pushName || 'Customer';
+        
+        // Extract text from standard conversation or extended text messages
+        const text = data.message.conversation || data.message.extendedTextMessage?.text;
+
+        if (text && !fromMe) {
+            addSystemLog(`WhatsApp Msg from ${pushName} (${remoteJid}): "${text}"`, 'success');
+            
+            // Trigger AI response in background
+            handleAIProcess(remoteJid, text);
+        }
+    } else {
+        // Log other event types (status updates, etc)
+        addSystemLog(`Webhook Event: ${type}`, 'info');
+    }
+    
+    res.status(200).send('OK');
+});
 
 // --- M-Pesa Logic ---
 function getDarajaTimestamp() {
@@ -124,19 +174,17 @@ async function getDarajaToken() {
     const data = await response.json();
     return data.access_token;
   } catch (error) { 
-      console.error("Daraja Auth Error", error);
       return null; 
   }
 }
 
 async function triggerSTKPush(phoneNumber, amount) {
   const token = await getDarajaToken();
-  if (!token) return { success: false, message: "M-Pesa Auth Failed. Check Key/Secret." };
+  if (!token) return { success: false, message: "M-Pesa Auth Failed." };
   
   const timestamp = getDarajaTimestamp();
   const password = Buffer.from(`${runtimeConfig.darajaShortcode}${runtimeConfig.darajaPasskey}${timestamp}`).toString('base64');
   
-  // SANITIZER: Ensure 254 format for M-Pesa
   let formattedPhone = phoneNumber.replace(/[^0-9]/g, '');
   if (formattedPhone.startsWith('0')) formattedPhone = '254' + formattedPhone.substring(1);
   if (formattedPhone.startsWith('7')) formattedPhone = '254' + formattedPhone;
