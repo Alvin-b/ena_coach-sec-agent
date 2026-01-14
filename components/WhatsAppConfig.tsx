@@ -34,13 +34,19 @@ const WhatsAppConfig: React.FC = () => {
 
   // UI State
   const [terminalLogs, setTerminalLogs] = useState<any[]>([]);
+  const [rawPayloads, setRawPayloads] = useState<any[]>([]);
   const [webhookUrl, setWebhookUrl] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [lastPulse, setLastPulse] = useState<Date | null>(null);
+  const [showRawInspector, setShowRawInspector] = useState(false);
 
-  const fetchLogs = async () => {
+  const fetchData = async () => {
       try {
-          const logRes = await fetch('/api/debug/system-logs');
+          const [logRes, rawRes] = await Promise.all([
+              fetch('/api/debug/system-logs'),
+              fetch('/api/debug/raw-payloads')
+          ]);
+          
           if (logRes.ok) {
               const logs = await logRes.json();
               if (logs.length > 0 && terminalLogs.length > 0) {
@@ -50,7 +56,11 @@ const WhatsAppConfig: React.FC = () => {
               }
               setTerminalLogs(logs);
           }
-      } catch (e) { console.debug("Polling logs..."); }
+          if (rawRes.ok) {
+              const raws = await rawRes.json();
+              setRawPayloads(raws);
+          }
+      } catch (e) { console.debug("Polling..."); }
   };
 
   useEffect(() => {
@@ -80,7 +90,7 @@ const WhatsAppConfig: React.FC = () => {
               setDarajaCallbackUrl(data.darajaCallbackUrl || `${currentOrigin}/callback/mpesa`);
           });
       
-      const poll = setInterval(fetchLogs, 2000); 
+      const poll = setInterval(fetchData, 2000); 
       return () => clearInterval(poll);
   }, []);
 
@@ -106,15 +116,14 @@ const WhatsAppConfig: React.FC = () => {
                 darajaCallbackUrl: darajaCallbackUrl.trim()
             })
         });
-        if (res.ok) alert("Production Engine synchronized.");
+        if (res.ok) alert("Production Engine Synchronized.");
         else alert("Sync failed.");
-    } catch (e) { alert("Network error."); }
+    } catch (e) { alert("Network Error."); }
     finally { setIsSaving(false); }
   };
 
   const runDiagnostics = async (type: string) => {
       setTestResults(prev => ({ ...prev, [type]: { loading: true } }));
-      
       let payload: any = {};
       let endpoint = `/api/test/${type}`;
 
@@ -135,17 +144,12 @@ const WhatsAppConfig: React.FC = () => {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload)
           });
-          
           const data = await res.json();
           setTestResults(prev => ({ 
               ...prev, 
-              [type]: { 
-                  loading: false, 
-                  status: data.success || res.ok ? 'success' : 'error', 
-                  msg: data.success || res.ok ? 'OK' : (data.message || 'Error')
-              } 
+              [type]: { loading: false, status: data.success || res.ok ? 'success' : 'error', msg: data.success || res.ok ? 'OK' : (data.message || 'Error') } 
           }));
-      } catch (e: any) {
+      } catch (e) {
           setTestResults(prev => ({ ...prev, [type]: { loading: false, status: 'error', msg: 'Offline' } }));
       }
   };
@@ -167,29 +171,54 @@ const WhatsAppConfig: React.FC = () => {
                       <h2 className="text-xl font-black uppercase tracking-widest">Active Listener</h2>
                   </div>
                   <p className="text-red-100 text-sm font-medium leading-relaxed mb-6">
-                      Server is listening for inbound webhooks. Copy the target URL into your Evolution API settings.
+                      Server is listening for inbound webhooks. Ensure the URL below is saved in your Evolution API instance.
                   </p>
-                  <div className="text-[10px] font-black uppercase tracking-tighter opacity-60">
-                      Pulse Status: {lastPulse ? 'Receiving Traffic' : 'Awaiting Signals...'}
-                  </div>
+                  <button 
+                    onClick={() => setShowRawInspector(!showRawInspector)}
+                    className="self-start px-4 py-2 bg-black/20 hover:bg-black/40 rounded-xl text-[10px] font-black uppercase tracking-widest transition"
+                  >
+                    {showRawInspector ? 'Close Inspector' : 'Open Payload Inspector'}
+                  </button>
               </div>
               <div className="p-10 flex-1 space-y-6">
                   <div>
-                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 block">Evolution API Webhook</label>
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 block">Evolution API Webhook Target</label>
                       <div className="flex bg-gray-50 p-1.5 rounded-2xl items-center border border-gray-100">
                           <input readOnly value={webhookUrl} className="flex-1 bg-transparent px-4 py-3 text-sm font-mono outline-none text-gray-700" />
                           <button onClick={() => copyToClipboard(webhookUrl)} className="bg-red-600 text-white px-5 py-3 rounded-xl font-black text-xs uppercase transition hover:bg-red-700">Copy</button>
                       </div>
                   </div>
-                  <div className="flex gap-4 p-4 bg-yellow-50 rounded-2xl border border-yellow-100">
-                      <i className="fas fa-info-circle text-yellow-600 mt-0.5"></i>
-                      <p className="text-[10px] text-yellow-800 font-bold leading-relaxed">
-                          Note: Some services send a GET request to verify the URL before sending POST payloads. Our server now supports both.
-                      </p>
+                  <div>
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 block">M-Pesa Callback Target</label>
+                      <div className="flex bg-gray-50 p-1.5 rounded-2xl items-center border border-gray-100">
+                          <input readOnly value={darajaCallbackUrl} className="flex-1 bg-transparent px-4 py-3 text-sm font-mono outline-none text-gray-700" />
+                          <button onClick={() => copyToClipboard(darajaCallbackUrl)} className="bg-black text-white px-5 py-3 rounded-xl font-black text-xs uppercase transition hover:bg-gray-800">Copy</button>
+                      </div>
                   </div>
               </div>
           </div>
       </div>
+
+      {showRawInspector && (
+          <div className="bg-gray-950 rounded-[2.5rem] p-8 border border-gray-800 shadow-2xl animation-fade-in">
+              <h3 className="text-white text-xs font-black uppercase tracking-widest mb-6">Raw Payload Inspector (Last 10)</h3>
+              <div className="space-y-4 max-h-96 overflow-y-auto pr-4 scrollbar-hide">
+                  {rawPayloads.length === 0 ? (
+                      <p className="text-gray-500 text-xs italic text-center py-10">Waiting for first webhook signal...</p>
+                  ) : rawPayloads.map((raw, i) => (
+                      <div key={i} className="bg-gray-900 p-4 rounded-2xl border border-gray-800">
+                          <div className="flex justify-between items-center mb-2">
+                              <span className="text-[10px] text-red-500 font-bold uppercase">{new Date(raw.timestamp).toLocaleTimeString()}</span>
+                              <span className="text-[10px] text-gray-600 font-mono">Size: {JSON.stringify(raw.data).length} chars</span>
+                          </div>
+                          <pre className="text-[10px] text-green-500 font-mono overflow-x-auto bg-black/50 p-4 rounded-xl">
+                              {JSON.stringify(raw.data, null, 2)}
+                          </pre>
+                      </div>
+                  ))}
+              </div>
+          </div>
+      )}
 
       {/* Activity Log */}
       <div className="bg-[#0b0b0e] rounded-[2.5rem] p-8 h-[400px] flex flex-col border border-gray-800 shadow-2xl font-mono overflow-hidden">
@@ -202,7 +231,7 @@ const WhatsAppConfig: React.FC = () => {
                 </div>
                 <p className="text-gray-400 text-[10px] uppercase tracking-[0.4em] font-black ml-2">Engine Activity Stream</p>
             </div>
-            <button onClick={fetchLogs} className="text-[10px] text-gray-500 hover:text-white uppercase font-black tracking-widest"><i className="fas fa-sync-alt mr-2"></i> Refresh</button>
+            <button onClick={fetchData} className="text-[10px] text-gray-500 hover:text-white uppercase font-black tracking-widest"><i className="fas fa-sync-alt mr-2"></i> Sync</button>
           </div>
           <div className="flex-1 overflow-y-auto text-[11px] leading-relaxed space-y-2.5 scrollbar-hide">
               {terminalLogs.length === 0 ? (
@@ -225,80 +254,69 @@ const WhatsAppConfig: React.FC = () => {
 
       {/* Simulator Suite */}
       <div className="bg-white rounded-[3rem] shadow-sm border border-gray-100 overflow-hidden">
-          <div className="bg-gray-950 p-10 text-white">
-              <div className="flex items-center gap-4 mb-2">
-                  <i className="fas fa-vial text-red-500 text-xl"></i>
-                  <h2 className="text-xl font-black uppercase tracking-widest">Logic Simulator</h2>
+          <div className="bg-gray-950 p-10 text-white flex justify-between items-center">
+              <div>
+                <div className="flex items-center gap-4 mb-2">
+                    <i className="fas fa-vial text-red-500 text-xl"></i>
+                    <h2 className="text-xl font-black uppercase tracking-widest">Simulation Center</h2>
+                </div>
+                <p className="text-gray-400 text-xs font-medium">Verify internal AI logic & payment triggers manually.</p>
               </div>
-              <p className="text-gray-400 text-xs font-medium">Test if the server logic works independently of the network.</p>
+              <div className="flex bg-gray-900 p-1 rounded-2xl border border-gray-800">
+                  <input 
+                      type="text" 
+                      value={testPhone} 
+                      onChange={e => setTestPhone(e.target.value)} 
+                      placeholder="Phone: 2547..."
+                      className="bg-transparent px-4 py-2 text-xs font-bold text-white outline-none w-40"
+                  />
+              </div>
           </div>
           <div className="p-10 space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-end">
-                  <div className="space-y-3">
-                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Mock Phone Number</label>
-                      <input 
-                          type="text" 
-                          value={testPhone} 
-                          onChange={e => setTestPhone(e.target.value)} 
-                          placeholder="254700000000"
-                          className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-bold text-gray-900 outline-none focus:border-red-600 transition"
-                      />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="p-8 rounded-3xl border-2 border-dashed border-gray-100 bg-gray-50 flex flex-col justify-between">
+                      <div>
+                        <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-4">Internal Webhook Test</h4>
+                        <input 
+                            type="text" 
+                            value={simText} 
+                            onChange={e => setSimText(e.target.value)} 
+                            className="w-full bg-white border border-gray-200 p-4 rounded-xl text-sm font-bold mb-4 outline-none focus:border-red-500"
+                            placeholder="Type a message to simulate..."
+                        />
+                      </div>
+                      <button 
+                        onClick={() => runDiagnostics('simulation')}
+                        className="w-full py-4 bg-gray-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-xl active:scale-95 transition"
+                      >
+                        Run Local Simulation
+                      </button>
                   </div>
-                  <div className="space-y-3">
-                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Mock Message Text</label>
-                      <input 
-                          type="text" 
-                          value={simText} 
-                          onChange={e => setSimText(e.target.value)} 
-                          placeholder="e.g. I want to book a bus to Kisumu"
-                          className="w-full bg-gray-50 border-2 border-gray-100 p-5 rounded-2xl text-sm font-bold text-gray-900 outline-none focus:border-red-600 transition"
-                      />
-                  </div>
-              </div>
-              
-              <div className="flex flex-col md:flex-row gap-4">
-                  <button 
-                    onClick={() => runDiagnostics('simulation')}
-                    disabled={testResults.simulation.loading}
-                    className="flex-1 py-5 bg-red-600 text-white rounded-2xl font-black text-xs uppercase tracking-[0.2em] shadow-xl hover:bg-red-700 transition"
-                  >
-                      {testResults.simulation.loading ? 'Processing Simulation...' : '🚀 Trigger Mock Inbound Message'}
-                  </button>
-                  <div className="flex-1 flex items-center justify-center bg-gray-50 rounded-2xl px-6 border border-gray-100">
-                      <p className="text-[10px] text-gray-500 font-bold uppercase leading-relaxed text-center">
-                          If this works and you get a reply, your AI logic is perfect. The problem is <strong>Evolution API's Webhook URL</strong>.
-                      </p>
+
+                  <div className="grid grid-cols-1 gap-4">
+                      {['gemini', 'whatsapp', 'mpesa'].map((type) => (
+                          <div key={type} className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm flex items-center justify-between">
+                             <div className="flex items-center gap-4">
+                                <div className="w-10 h-10 rounded-xl bg-gray-50 flex items-center justify-center text-gray-400">
+                                   <i className={`fas ${type === 'mpesa' ? 'fa-wallet' : type === 'whatsapp' ? 'fa-mobile-alt' : 'fa-brain'}`}></i>
+                                </div>
+                                <div>
+                                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">{type}</p>
+                                    <p className="text-[10px] font-bold text-gray-900">{testResults[type].msg || 'Awaiting Test'}</p>
+                                </div>
+                             </div>
+                             <button 
+                                onClick={() => runDiagnostics(type)}
+                                disabled={testResults[type].loading}
+                                className={`px-5 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition ${testResults[type].status === 'success' ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                             >
+                                {testResults[type].loading ? '...' : 'Validate'}
+                             </button>
+                          </div>
+                      ))}
                   </div>
               </div>
           </div>
-      </div>
-
-      {/* Diagnostic Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {['gemini', 'whatsapp', 'mpesa'].map((type) => (
-              <div key={type} className="bg-white rounded-[2rem] p-8 border border-gray-100 shadow-sm flex flex-col items-center text-center">
-                  <div className="w-12 h-12 rounded-2xl bg-gray-50 flex items-center justify-center text-gray-400 mb-6">
-                      <i className={`fas ${type === 'mpesa' ? 'fa-wallet' : type === 'whatsapp' ? 'fa-mobile-alt' : 'fa-brain'}`}></i>
-                  </div>
-                  <h4 className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-6">Test {type}</h4>
-                  <button 
-                    onClick={() => runDiagnostics(type)}
-                    disabled={testResults[type].loading}
-                    className={`w-full py-4 rounded-xl text-[10px] font-black uppercase tracking-widest transition shadow-md active:scale-95 ${
-                        testResults[type].status === 'success' ? 'bg-green-600 text-white' :
-                        testResults[type].status === 'error' ? 'bg-red-600 text-white' :
-                        'bg-gray-100 text-gray-700'
-                    }`}
-                  >
-                      {testResults[type].loading ? '...' : `Validate ${type}`}
-                  </button>
-                  {testResults[type].msg && (
-                      <p className={`mt-3 text-[10px] font-black uppercase ${testResults[type].status === 'success' ? 'text-green-600' : 'text-red-500'}`}>
-                         {testResults[type].msg}
-                      </p>
-                  )}
-              </div>
-          ))}
       </div>
 
       {/* Config Hub */}
@@ -313,12 +331,11 @@ const WhatsAppConfig: React.FC = () => {
                 disabled={isSaving}
                 className="bg-red-600 hover:bg-red-700 text-white px-8 py-4 rounded-2xl text-xs font-black uppercase tracking-widest transition shadow-xl active:scale-95"
             >
-                {isSaving ? 'Syncing...' : 'Save & Deploy'}
+                {isSaving ? 'Syncing...' : 'Apply Changes'}
             </button>
         </div>
 
         <div className="p-10 space-y-12">
-            {/* Evolution API Settings */}
             <section className="bg-gray-50 p-8 rounded-[2rem] border border-gray-100">
                 <h3 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-8 flex items-center">
                     <span className="w-8 h-px bg-gray-200 mr-4"></span>
@@ -326,12 +343,12 @@ const WhatsAppConfig: React.FC = () => {
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div className="space-y-3">
-                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Evolution API URL</label>
-                        <input type="text" value={apiUrl} onChange={e => setApiUrl(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-sm font-bold text-gray-900 focus:border-red-600 outline-none" placeholder="https://..." />
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">API URL</label>
+                        <input type="text" value={apiUrl} onChange={e => setApiUrl(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-sm font-bold outline-none" placeholder="https://..." />
                     </div>
                     <div className="space-y-3">
                         <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Instance Name</label>
-                        <input type="text" value={instanceName} onChange={e => setInstanceName(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-sm font-bold text-gray-900 focus:border-red-600 outline-none" />
+                        <input type="text" value={instanceName} onChange={e => setInstanceName(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-sm font-bold outline-none" />
                     </div>
                     <div className="md:col-span-2 space-y-3">
                         <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">API Key (X-API-KEY)</label>
@@ -340,7 +357,6 @@ const WhatsAppConfig: React.FC = () => {
                 </div>
             </section>
 
-            {/* Daraja M-Pesa Settings */}
             <section className="bg-green-50/30 p-8 rounded-[2rem] border border-green-100">
                 <h3 className="text-xs font-black text-green-600 uppercase tracking-widest mb-8 flex items-center">
                     <span className="w-8 h-px bg-green-200 mr-4"></span>
@@ -367,17 +383,16 @@ const WhatsAppConfig: React.FC = () => {
                         <input type="password" value={darajaPasskey} onChange={e => setDarajaPasskey(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-sm font-mono outline-none" />
                     </div>
                     <div className="space-y-3">
-                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Shortcode (Paybill/Store)</label>
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Shortcode (BuyGoods/Paybill)</label>
                         <input type="text" value={darajaShortcode} onChange={e => setDarajaShortcode(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-sm font-bold outline-none" />
                     </div>
                     <div className="space-y-3">
-                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Callback URL</label>
-                        <input type="text" value={darajaCallbackUrl} onChange={e => setDarajaCallbackUrl(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-xs font-mono outline-none" />
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Store Number (Till Only)</label>
+                        <input type="text" value={darajaStoreNumber} onChange={e => setDarajaStoreNumber(e.target.value)} className="w-full bg-white border-2 border-gray-100 p-5 rounded-2xl text-sm font-bold outline-none" />
                     </div>
                 </div>
             </section>
 
-            {/* Gemini API Key */}
             <section className="bg-blue-50/30 p-8 rounded-[2rem] border border-blue-100">
                 <h3 className="text-xs font-black text-blue-600 uppercase tracking-widest mb-8 flex items-center">
                     <span className="w-8 h-px bg-blue-200 mr-4"></span>
