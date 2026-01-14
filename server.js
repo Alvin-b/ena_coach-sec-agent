@@ -83,7 +83,10 @@ async function getDarajaToken() {
 async function triggerSTKPush(phoneNumber, amount) {
     addSystemLog(`DARAJA: Attempting STK Push for ${phoneNumber}...`, 'info');
     const token = await getDarajaToken();
-    if (!token) return { success: false, message: "Auth Failed" };
+    if (!token) {
+        addSystemLog("DARAJA ERROR: Failed to get OAuth token.", "error");
+        return { success: false, message: "Auth Failed" };
+    }
     
     const timestamp = getDarajaTimestamp();
     const shortcode = runtimeConfig.darajaShortcode.trim();
@@ -105,7 +108,7 @@ async function triggerSTKPush(phoneNumber, amount) {
         "PhoneNumber": formattedPhone,
         "CallBackURL": runtimeConfig.darajaCallbackUrl,
         "AccountReference": runtimeConfig.darajaAccountRef,
-        "TransactionDesc": "Ena Coach Booking"
+        "TransactionDesc": "Ena Coach Ticket Booking"
     };
 
     try {
@@ -116,57 +119,82 @@ async function triggerSTKPush(phoneNumber, amount) {
         });
         const data = await response.json();
         if (data.ResponseCode === "0") {
-            addSystemLog(`DARAJA SENT: ${data.CheckoutRequestID}`, 'success');
-            return { success: true };
+            addSystemLog(`DARAJA SUCCESS: Request ${data.CheckoutRequestID} triggered for ${formattedPhone}`, 'success');
+            return { success: true, checkoutId: data.CheckoutRequestID };
         }
+        addSystemLog(`DARAJA REJECTED: ${data.ResponseDescription}`, 'error');
         return { success: false, message: data.ResponseDescription };
-    } catch (error) { return { success: false, message: "Network Error" }; }
+    } catch (error) { 
+        addSystemLog(`DARAJA ERROR: ${error.message}`, 'error');
+        return { success: false, message: "Network Error" }; 
+    }
 }
 
 // --- WhatsApp Outbound ---
 async function sendWhatsApp(jid, text) {
-    if (!runtimeConfig.evolutionUrl || !runtimeConfig.evolutionToken) return;
+    if (!runtimeConfig.evolutionUrl || !runtimeConfig.evolutionToken) {
+        addSystemLog("WA ERROR: Missing API URL or Token", "error");
+        return;
+    }
     const cleanUrl = runtimeConfig.evolutionUrl.replace(/\/$/, '');
     const cleanJid = jid.split('@')[0].replace(/[^0-9]/g, '');
-    const targetUrl = `${cleanUrl}/message/sendText/${runtimeConfig.instanceName}`;
+    const instance = runtimeConfig.instanceName.trim();
+    const targetUrl = `${cleanUrl}/message/sendText/${instance}`;
 
     try {
-        await fetch(targetUrl, {
+        const response = await fetch(targetUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'apikey': runtimeConfig.evolutionToken },
+            headers: { 
+                'Content-Type': 'application/json', 
+                'apikey': runtimeConfig.evolutionToken.trim() 
+            },
             body: JSON.stringify({ number: cleanJid, text: text })
         });
-        addSystemLog(`REPLY SENT to ${cleanJid}`, 'success');
-    } catch(e) { addSystemLog(`REPLY ERROR: ${e.message}`, 'error'); }
+        if (response.ok) addSystemLog(`REPLY SENT to ${cleanJid}`, 'success');
+        else addSystemLog(`WA REPLY FAILED: HTTP ${response.status}`, 'error');
+    } catch(e) { 
+        addSystemLog(`WHATSAPP NETWORK ERROR: ${e.message}`, 'error'); 
+    }
 }
 
-// --- AI Processing ---
+// --- AI Engine (Martha) ---
 async function handleAIProcess(phoneNumber, incomingText) {
     try {
+        if (!runtimeConfig.apiKey) {
+            addSystemLog("AI ERROR: Gemini Key missing", "error");
+            return;
+        }
+
         const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
         const response = await ai.models.generateContent({ 
             model: 'gemini-3-flash-preview', 
-            contents: incomingText,
-            config: { systemInstruction: "You are Martha, assistant for Ena Coach. Help with bus bookings. If user is ready to pay, mention M-Pesa." }
+            contents: `User says: "${incomingText}". Reply as Martha, the Ena Coach assistant.`,
+            config: { 
+                systemInstruction: "You are Martha, the Ena Coach AI Assistant. Help users book buses. If a user is ready to book/pay, mention you are sending an M-Pesa prompt. Keep it brief." 
+            }
         });
 
         if (response.text) {
             await sendWhatsApp(phoneNumber, response.text);
-            if (response.text.toLowerCase().includes('m-pesa') || response.text.toLowerCase().includes('prompt')) {
+            
+            // Auto-trigger STK Push if Martha mentions M-Pesa or Prompt
+            const lowerText = response.text.toLowerCase();
+            if (lowerText.includes('m-pesa') || lowerText.includes('prompt') || lowerText.includes('stk')) {
+                // Testing: 1 KES
                 await triggerSTKPush(phoneNumber, 1);
             }
         }
-    } catch (e) { addSystemLog(`AI ERROR: ${e.message}`, 'error'); }
+    } catch (e) { 
+        addSystemLog(`AI PROCESSING ERROR: ${e.message}`, 'error'); 
+    }
 }
 
-// --- Precision Webhook Harvester ---
+// --- High-Precision Webhook Harvester ---
 function harvest(obj, keys) {
     if (!obj || typeof obj !== 'object') return null;
-    // Check local keys first
     for (const key of keys) {
-        if (obj[key] && typeof obj[key] === 'string' && obj[key].length > 1) return obj[key];
+        if (obj[key] && typeof obj[key] === 'string' && obj[key].length > 0) return obj[key];
     }
-    // Deep dive
     for (const key in obj) {
         const found = harvest(obj[key], keys);
         if (found) return found;
@@ -175,52 +203,55 @@ function harvest(obj, keys) {
 }
 
 const webhookHandler = async (req, res) => {
+    // Acknowledge immediately to avoid Evolution API timeouts
     res.status(200).send('OK');
+
     const payload = req.body;
     if (!payload || Object.keys(payload).length === 0) {
-        return addSystemLog("SIGNAL DETECTED: Empty or non-JSON body", "warning");
+        return; 
     }
 
-    addSystemLog(`SIGNAL REACHED SERVER: Keys [${Object.keys(payload).join(', ')}]`, 'info', payload);
+    addSystemLog(`WEBHOOK HIT: Source [${req.ip}]`, 'info', payload);
 
-    // Precise extraction for Evolution API
-    const jid = harvest(payload, ['remoteJid', 'sender', 'from', 'number']);
-    const text = harvest(payload, ['conversation', 'text', 'body', 'message']);
+    // Precise extraction for the Evolution API structure you provided
+    let jid = harvest(payload, ['remoteJid', 'sender', 'from', 'number']);
+    let text = harvest(payload, ['conversation', 'text', 'body', 'message']);
 
-    // Check if it's from the bot itself
-    const isBot = (obj) => {
+    // Check if message is from the bot itself
+    const isFromMe = (obj) => {
         if (!obj || typeof obj !== 'object') return false;
         if (obj.fromMe === true) return true;
-        for (const k in obj) if (isBot(obj[k])) return true;
+        for (const k in obj) if (isFromMe(obj[k])) return true;
         return false;
     };
 
-    if (jid && text && !isBot(payload)) {
-        addSystemLog(`MSG VALIDATED: "${text}" from ${jid}`, 'success');
+    if (jid && text && !isFromMe(payload)) {
+        addSystemLog(`VALID MESSAGE: "${text}" from ${jid}`, 'success');
         handleAIProcess(jid, text);
     } else {
-        addSystemLog(`MSG DISCARDED: JID or Text missing, or message is from bot.`, 'warning');
+        addSystemLog("WEBHOOK IGNORED: JID/Text missing or loop detected.", "warning");
     }
 };
 
 app.all('/webhook', webhookHandler);
 
 app.post('/callback/mpesa', (req, res) => {
-    addSystemLog(`DARAJA CALLBACK`, 'success', req.body);
+    addSystemLog(`M-PESA CALLBACK RECEIVED`, 'success', req.body);
     res.status(200).send('OK');
 });
 
-// API Routes
+// Admin API
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
+    addSystemLog("SYSTEM: Configuration updated successfully.", "info");
     res.json({ success: true });
 });
 app.get('/api/debug/system-logs', (req, res) => res.json(systemLogs));
 app.get('/api/debug/raw-payloads', (req, res) => res.json(rawPayloads));
 
-// Static
+// Static Client Serving
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => addSystemLog(`ENGINE ONLINE: PORT ${PORT}`, 'success'));
+app.listen(PORT, '0.0.0.0', () => addSystemLog(`MARTHA ENGINE ONLINE: Listening on port ${PORT}`, 'success'));
