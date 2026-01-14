@@ -50,15 +50,15 @@ function addSystemLog(msg, type = 'info', raw = null) {
 const app = express();
 
 // --- RESILIENT MIDDLEWARE ---
+// Use standard JSON and URLencoded parsing with generous limits
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Global Request Sniffer (Shows precisely what hits the server)
+// Global Request Sniffer
 app.use((req, res, next) => {
     const isAsset = req.url.match(/\.(js|css|png|jpg|svg|ico|map)$/) || req.url.startsWith('/@');
     if (!isAsset && !req.url.startsWith('/api/debug')) {
-        const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-        addSystemLog(`INCOMING: ${req.method} ${req.url} | Content-Type: ${req.headers['content-type']}`, 'info');
+        addSystemLog(`TRAFFIC: ${req.method} ${req.url}`, 'info');
     }
     next();
 });
@@ -66,12 +66,12 @@ app.use((req, res, next) => {
 // --- WhatsApp Logic ---
 async function sendWhatsApp(jid, text) {
     if (!runtimeConfig.evolutionUrl || !runtimeConfig.evolutionToken) {
-        addSystemLog("ERROR: Evolution API URL/Token missing.", "error");
+        addSystemLog("OUTBOUND ERROR: Missing Credentials", "error");
         return;
     }
     
     const cleanUrl = runtimeConfig.evolutionUrl.replace(/\/$/, '');
-    let cleanNumber = jid.replace(/[^0-9]/g, '');
+    let cleanNumber = jid.toString().replace(/[^0-9]/g, '');
     if (cleanNumber.startsWith('0')) cleanNumber = '254' + cleanNumber.substring(1);
     else if (cleanNumber.startsWith('7')) cleanNumber = '254' + cleanNumber;
     
@@ -81,75 +81,95 @@ async function sendWhatsApp(jid, text) {
     try {
         const response = await fetch(targetUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'apikey': runtimeConfig.evolutionToken.trim() },
+            headers: { 
+                'Content-Type': 'application/json', 
+                'apikey': runtimeConfig.evolutionToken.trim() 
+            },
             body: JSON.stringify({ number: cleanNumber, text: text })
         });
-        if (response.ok) addSystemLog(`OUTBOUND: WhatsApp sent to ${cleanNumber}`, 'success');
-        else addSystemLog(`OUTBOUND FAILED: Evolution status ${response.status}`, 'error');
-    } catch(e) { addSystemLog(`OUTBOUND NETWORK ERROR: ${e.message}`, 'error'); }
+        if (response.ok) addSystemLog(`REPLY SENT: To ${cleanNumber}`, 'success');
+        else addSystemLog(`REPLY FAILED: Status ${response.status}`, 'error');
+    } catch(e) { 
+        addSystemLog(`REPLY NETWORK ERROR: ${e.message}`, 'error'); 
+    }
 }
 
 async function handleAIProcess(phoneNumber, incomingText) {
     try {
-        if (!runtimeConfig.apiKey) return addSystemLog("AI STOPPED: No Gemini Key", "error");
+        if (!runtimeConfig.apiKey) return addSystemLog("AI HALTED: No API Key", "error");
+        
         const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
         const response = await ai.models.generateContent({ 
             model: 'gemini-3-flash-preview', 
             contents: `User: "${incomingText}". Reply as Martha, the Ena Coach assistant.`,
-            config: { systemInstruction: "You are Martha from Ena Coach. Help with bus bookings. Be brief." }
+            config: { 
+                systemInstruction: "You are Martha from Ena Coach. Help with bus bookings. Be extremely brief and helpful." 
+            }
         });
-        if (response.text) await sendWhatsApp(phoneNumber, response.text);
-    } catch (e) { addSystemLog(`AI ERROR: ${e.message}`, 'error'); }
+
+        if (response.text) {
+            await sendWhatsApp(phoneNumber, response.text);
+        }
+    } catch (e) { 
+        addSystemLog(`AI ENGINE ERROR: ${e.message}`, 'error'); 
+    }
 }
 
-// --- ULTRA-PERMISSIVE WEBHOOK HANDLER ---
+/**
+ * RECURSIVE VALUE HARVESTER
+ * Crawls any object looking for specific keys and returns the first meaningful string found.
+ */
+function harvest(obj, keys) {
+    if (!obj || typeof obj !== 'object') return null;
+    for (const key of keys) {
+        if (obj[key] && typeof obj[key] === 'string' && obj[key].length > 1) return obj[key];
+    }
+    for (const key in obj) {
+        const found = harvest(obj[key], keys);
+        if (found) return found;
+    }
+    return null;
+}
+
+// --- TEST-READY ULTRA WEBHOOK ---
 const webhookHandler = async (req, res) => {
-    // 1. Respond with 200 OK immediately to satisfy gateway timeouts
+    // RULE 1: Respond 200 OK instantly. Never wait for AI.
     res.status(200).send('OK');
 
-    // 2. Log full payload for debugging
     const payload = req.body;
-    addSystemLog(`WEBHOOK PULSE: Received payload with keys [${Object.keys(payload || {}).join(', ')}]`, 'info', payload);
+    if (!payload || Object.keys(payload).length === 0) return;
+
+    addSystemLog(`SIGNAL RECEIVED: Keys: [${Object.keys(payload).join(', ')}]`, 'info', payload);
 
     if (req.method === 'GET') return;
 
-    // 3. Deep search for message data (Handles v1, v2, v3, and custom formats)
-    const findMessageData = (obj) => {
-        let jid = null;
-        let text = null;
-        let fromMe = false;
+    // RULE 2: Deep Harvest
+    // Look for anything that resembles a JID or Number
+    const jid = harvest(payload, ['remoteJid', 'from', 'sender', 'number', 'participant', 'jid']);
+    
+    // Look for anything that resembles a Message Body
+    const text = harvest(payload, ['conversation', 'text', 'body', 'content', 'caption', 'message']);
 
-        // Recursively look for jid and text
-        const traverse = (item) => {
-            if (!item || typeof item !== 'object') return;
-            
-            // Look for JID
-            if (item.remoteJid && !jid) jid = item.remoteJid;
-            if (item.from && !jid && typeof item.from === 'string' && item.from.includes('@')) jid = item.from;
-            
-            // Look for fromMe
-            if (item.fromMe !== undefined) fromMe = item.fromMe;
-
-            // Look for Text
-            if (item.conversation && !text) text = item.conversation;
-            if (item.text && !text && typeof item.text === 'string') text = item.text;
-            if (item.extendedTextMessage?.text && !text) text = item.extendedTextMessage.text;
-
-            Object.values(item).forEach(v => traverse(v));
-        };
-
-        traverse(obj);
-        return { jid, text, fromMe };
+    // Check if message is from the bot itself (to avoid infinite loops)
+    const isFromMe = (obj) => {
+        if (!obj || typeof obj !== 'object') return false;
+        if (obj.fromMe === true) return true;
+        for (const k in obj) if (isFromMe(obj[k])) return true;
+        return false;
     };
 
-    const extracted = findMessageData(payload);
+    if (jid && text) {
+        if (isFromMe(payload)) {
+            addSystemLog(`SIGNAL IGNORED: Outbound message detected.`, 'info');
+            return;
+        }
 
-    if (extracted.text && extracted.jid && !extracted.fromMe) {
-        addSystemLog(`VALID MESSAGE: "${extracted.text}" from ${extracted.jid}`, 'success');
-        // Process in background
-        handleAIProcess(extracted.jid, extracted.text);
+        addSystemLog(`MESSAGE EXTRACTED: "${text}" from ${jid}`, 'success');
+        
+        // Background AI processing
+        handleAIProcess(jid, text);
     } else {
-        addSystemLog("WEBHOOK IGNORED: No valid user message structure detected.", "error");
+        addSystemLog("SIGNAL INCOMPLETE: No recognizable JID or Text found in the packet.", "error");
     }
 };
 
@@ -157,21 +177,20 @@ app.all('/webhook', webhookHandler);
 
 // --- M-Pesa Callback ---
 app.post('/callback/mpesa', (req, res) => {
-    addSystemLog(`M-PESA CALLBACK: Hit received.`, 'success', req.body);
+    addSystemLog(`M-PESA SIGNAL: Callback reached server.`, 'success', req.body);
     res.status(200).send('OK');
 });
 
-// --- API Endpoints ---
+// --- Dashboard API ---
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog("SYSTEM: Configuration updated.", "info");
+    addSystemLog("SYSTEM: Config synchronized.", "info");
     res.json({ success: true });
 });
 app.get('/api/debug/system-logs', (req, res) => res.json(systemLogs));
 app.get('/api/debug/raw-payloads', (req, res) => res.json(rawPayloads));
 
-// Diagnostic Test Endpoints
 app.post('/api/test/gemini', async (req, res) => {
     try {
         const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
@@ -181,7 +200,7 @@ app.post('/api/test/gemini', async (req, res) => {
 });
 
 app.post('/api/test/whatsapp', async (req, res) => {
-    await sendWhatsApp(req.body.phoneNumber, "Martha Connectivity Test: ONLINE.");
+    await sendWhatsApp(req.body.phoneNumber, "Martha System Check: Outbound engine is online.");
     res.json({ success: true });
 });
 
@@ -189,13 +208,13 @@ app.post('/api/test/trigger-webhook', async (req, res) => {
     const { phoneNumber, text } = req.body;
     req.body = {
         event: "messages.upsert",
-        data: [{ key: { remoteJid: `${phoneNumber}@s.whatsapp.net`, fromMe: false }, message: { conversation: text } }]
+        data: { key: { remoteJid: `${phoneNumber}@s.whatsapp.net`, fromMe: false }, message: { conversation: text } }
     };
     return webhookHandler(req, res);
 });
 
-// Static Hosting
+// Static Serving
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => addSystemLog(`ENGINE ONLINE: Port ${PORT}`, 'success'));
+app.listen(PORT, '0.0.0.0', () => addSystemLog(`MARTHA ENGINE: Operational on port ${PORT}`, 'success'));
