@@ -12,7 +12,9 @@ import { GoogleGenAI } from "@google/genai";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PORT = process.env.PORT || 10000;
+
+// Fly.io expects 3000, Render injects its own via process.env.PORT
+const PORT = process.env.PORT || 3000;
 
 // --- Runtime State ---
 const runtimeConfig = {
