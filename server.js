@@ -1,174 +1,197 @@
 
 /**
  * Ena Coach AI Agent - Master Unified Server
- * Environment-Aware Binding for Fly.io & Render
+ * Features: Persistence, AI Tooling, and Media Integration
  */
 
 import 'dotenv/config'; 
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// FLY.IO vs RENDER PORT LOGIC
 const PORT = process.env.FLY_APP_NAME ? 3000 : (process.env.PORT || 3000);
 
-// --- Runtime State ---
+// --- 1. PERSISTENT DATA STORE (Simulated) ---
+const DATA_STORE = {
+    routes: [
+        { id: 'R001', origin: 'Nairobi', destination: 'Kisumu', departureTime: '08:00 AM', price: 1500, busType: 'Luxury', availableSeats: 40, capacity: 45 },
+        { id: 'R002', origin: 'Kisumu', destination: 'Nairobi', departureTime: '08:00 AM', price: 1500, busType: 'Luxury', availableSeats: 42, capacity: 45 },
+        { id: 'R003', origin: 'Nairobi', destination: 'Mombasa', departureTime: '09:00 PM', price: 1600, busType: 'Standard', availableSeats: 30, capacity: 45 },
+        { id: 'R004', origin: 'Mombasa', destination: 'Nairobi', departureTime: '09:00 PM', price: 1600, busType: 'Standard', availableSeats: 35, capacity: 45 },
+    ],
+    tickets: [],
+    logs: [],
+    raw: []
+};
+
 const runtimeConfig = {
     apiKey: (process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim(),
     evolutionUrl: (process.env.EVOLUTION_API_URL || '').trim(),
     evolutionToken: (process.env.EVOLUTION_API_TOKEN || '').trim(),
     instanceName: (process.env.INSTANCE_NAME || 'EnaCoach').trim(),
-    darajaKey: (process.env.DARAJA_KEY || '').trim(),
-    darajaSecret: (process.env.DARAJA_SECRET || '').trim(),
-    darajaPasskey: (process.env.DARAJA_PASSKEY || '').trim(),
-    darajaShortcode: (process.env.DARAJA_SHORTCODE || '5512238').trim(),
 };
 
-const systemLogs = []; 
-const rawPayloads = []; 
-
-/**
- * Silent Logger: Filters out noisy polling traffic.
- */
 function addSystemLog(msg, type = 'info', raw = null) {
+    if (msg.includes('/api/debug')) return;
     const log = { msg, type, timestamp: new Date().toISOString() };
-    
-    // Internal dashboard noise reduction: don't push these to the log array
-    if (msg.includes('[INBOUND]')) return; 
-
-    systemLogs.unshift(log);
-    if (raw) {
-        rawPayloads.unshift({ timestamp: log.timestamp, data: raw });
-        if (rawPayloads.length > 50) rawPayloads.pop();
-    }
-    if (systemLogs.length > 100) systemLogs.pop();
-    
-    // Only console.log meaningful events to keep Fly/Render logs clean
-    if (type !== 'info' || msg.includes('SIGNAL') || msg.includes('SERVER')) {
-        console.log(`[${type.toUpperCase()}] ${msg}`);
-    }
+    DATA_STORE.logs.unshift(log);
+    if (raw) DATA_STORE.raw.unshift({ timestamp: log.timestamp, ...raw });
+    if (DATA_STORE.logs.length > 50) DATA_STORE.logs.pop();
+    if (DATA_STORE.raw.length > 20) DATA_STORE.raw.pop();
+    console.log(`[${type.toUpperCase()}] ${msg}`);
 }
+
+// --- 2. AI TOOLS DEFINITION ---
+const tools = [
+    {
+        name: 'searchRoutes',
+        description: 'Find bus routes between two cities.',
+        parameters: {
+            type: Type.OBJECT,
+            properties: { origin: { type: Type.STRING }, destination: { type: Type.STRING } },
+            required: ['origin', 'destination']
+        }
+    },
+    {
+        name: 'bookTicket',
+        description: 'Finalize a booking and generate a ticket ID.',
+        parameters: {
+            type: Type.OBJECT,
+            properties: { 
+                passengerName: { type: Type.STRING }, 
+                routeId: { type: Type.STRING },
+                phoneNumber: { type: Type.STRING }
+            },
+            required: ['passengerName', 'routeId', 'phoneNumber']
+        }
+    }
+];
 
 const app = express();
+app.use(express.json({ limit: '50mb' }));
 
-// --- 1. QUIET BODY PARSING ---
-app.use(express.json({ 
-    limit: '50mb',
-    verify: (req, res, buf) => { req.rawBody = buf.toString(); }
-}));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-app.use(express.text({ type: 'text/*' }));
-
-// --- 2. DIAGNOSTIC ROUTES ---
-app.get('/health', (req, res) => res.json({ status: 'UP' }));
-
-app.get('/webhook', (req, res) => {
-    res.send(`<div style="font-family:sans-serif;text-align:center;padding:50px;"><h1>Webhook Endpoint Active</h1><p>Send POST requests to this URL.</p></div>`);
-});
-
-// --- 3. THE WEBHOOK HANDLER ---
-app.post('/webhook', (req, res) => {
-    // Acknowledge immediately
-    res.status(200).send('OK');
-
-    let payload = req.body;
-    if (typeof payload === 'string' && payload.startsWith('{')) {
-        try { payload = JSON.parse(payload); } catch (e) {}
-    }
-
-    if (!payload || Object.keys(payload).length === 0) {
-        // Only log if there's actually a problem
-        if (req.rawBody) addSystemLog("WEBHOOK ALERT: Hit received but JSON parsing failed.", "warning", { raw: req.rawBody });
-        return;
-    }
-
-    const eventType = payload.event || payload.type || "unknown_event";
-    
-    // Log meaningful webhook hits
-    addSystemLog(`WEBHOOK SIGNAL: ${eventType}`, 'success', payload);
-
-    // Extraction Logic
-    let jid = null;
-    let text = null;
-    let fromMe = false;
-
-    if (payload.event === 'messages.upsert' && payload.data) {
-        jid = payload.data.key?.remoteJid;
-        fromMe = payload.data.key?.fromMe || false;
-        text = payload.data.message?.conversation || 
-               payload.data.message?.extendedTextMessage?.text ||
-               payload.data.message?.imageMessage?.caption;
-    } else {
-        jid = payload.sender || payload.remoteJid || payload.from;
-        text = payload.text || payload.body || payload.message?.conversation;
-        fromMe = payload.fromMe || false;
-    }
-
-    if (jid && text && !fromMe) {
-        addSystemLog(`PROCESSING MSG: "${text}" from ${jid}`, 'info');
-        handleAIProcess(jid, text);
-    }
-});
-
-// --- 4. AI ENGINE ---
-async function handleAIProcess(jid, msg) {
-    if (!runtimeConfig.apiKey) return addSystemLog("AI HALT: No Gemini API Key", "error");
-
+// --- 3. WHATSAPP SENDER (Text & Media) ---
+async function sendWhatsApp(jid, text) {
+    if (!runtimeConfig.evolutionUrl) return;
+    const url = `${runtimeConfig.evolutionUrl.replace(/\/$/, '')}/message/sendText/${runtimeConfig.instanceName}`;
     try {
-        const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
-        const result = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: `User: "${msg}". You are Martha from Ena Coach. Reply concisely.`,
+        await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': runtimeConfig.evolutionToken },
+            body: JSON.stringify({ number: jid.split('@')[0], text })
         });
-
-        if (result.text) {
-            addSystemLog(`AI REPLY: ${result.text.substring(0, 40)}...`, 'success');
-            await sendWhatsApp(jid, result.text);
-        }
-    } catch (e) {
-        addSystemLog(`AI ENGINE ERROR: ${e.message}`, 'error');
-    }
+    } catch (e) { addSystemLog(`WA SEND ERROR: ${e.message}`, 'error'); }
 }
 
-async function sendWhatsApp(jid, text) {
-    if (!runtimeConfig.evolutionUrl || !runtimeConfig.evolutionToken) return;
-    const cleanUrl = runtimeConfig.evolutionUrl.replace(/\/$/, '');
-    const cleanJid = jid.split('@')[0].replace(/[^0-9]/g, '');
-    const url = `${cleanUrl}/message/sendText/${runtimeConfig.instanceName}`;
-
+async function sendWhatsAppMedia(jid, caption, mediaUrl) {
+    if (!runtimeConfig.evolutionUrl) return;
+    const url = `${runtimeConfig.evolutionUrl.replace(/\/$/, '')}/message/sendMedia/${runtimeConfig.instanceName}`;
     try {
         const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'apikey': runtimeConfig.evolutionToken },
-            body: JSON.stringify({ number: cleanJid, text: text })
+            body: JSON.stringify({
+                number: jid.split('@')[0],
+                media: mediaUrl,
+                mediatype: "image",
+                caption: caption
+            })
         });
-        if (res.ok) addSystemLog(`WA SENT: ${cleanJid}`, 'success');
-    } catch(e) { addSystemLog(`WA NETWORK ERROR: ${e.message}`, 'error'); }
+        if (res.ok) addSystemLog(`MEDIA TICKET SENT to ${jid}`, 'success');
+    } catch (e) { addSystemLog(`MEDIA SEND ERROR: ${e.message}`, 'error'); }
 }
 
-// --- 5. SYSTEM ADMIN API ---
+// --- 4. AI AGENT LOGIC ---
+async function handleAIProcess(jid, msg) {
+    if (!runtimeConfig.apiKey) return;
+    const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
+    
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: `[SYSTEM: Time ${new Date().toLocaleTimeString()}] User: "${msg}"`,
+            config: {
+                systemInstruction: "You are Martha from Ena Coach. Use tools to find routes and book. Keep WhatsApp replies very short.",
+                tools: [{ functionDeclarations: tools }]
+            }
+        });
+
+        let textReply = response.text || "";
+        
+        if (response.functionCalls) {
+            for (const call of response.functionCalls) {
+                if (call.name === 'searchRoutes') {
+                    const found = DATA_STORE.routes.filter(r => 
+                        r.origin.toLowerCase().includes(call.args.origin.toLowerCase()) && 
+                        r.destination.toLowerCase().includes(call.args.destination.toLowerCase())
+                    );
+                    const resultText = found.length > 0 ? JSON.stringify(found) : "No routes found.";
+                    // Direct reply for simplicity in this bridge
+                    textReply = found.length > 0 
+                        ? `I found these routes for you: ${found.map(r => `${r.id}: ${r.origin}->${r.destination} @ KES ${r.price}`).join('. ')}` 
+                        : "Sorry, no routes found.";
+                } 
+                if (call.name === 'bookTicket') {
+                    const ticketId = `TKT-${Math.floor(Math.random() * 8999) + 1000}`;
+                    const route = DATA_STORE.routes.find(r => r.id === call.args.routeId);
+                    const newTicket = {
+                        id: ticketId,
+                        passengerName: call.args.passengerName,
+                        routeId: call.args.routeId,
+                        phoneNumber: call.args.phoneNumber,
+                        bookingTime: new Date().toISOString(),
+                        routeDetails: route
+                    };
+                    DATA_STORE.tickets.unshift(newTicket);
+                    textReply = `✅ Confirmed! Ticket ${ticketId} generated for ${call.args.passengerName}. Sending your QR ticket now...`;
+                    
+                    // 1. Send text confirmation
+                    await sendWhatsApp(jid, textReply);
+                    // 2. Send Media Ticket
+                    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${ticketId}`;
+                    await sendWhatsAppMedia(jid, `Your Ena Coach Ticket: ${ticketId}`, qrUrl);
+                    return; // Stop here as we've handled the turn
+                }
+            }
+        }
+
+        if (textReply) await sendWhatsApp(jid, textReply);
+    } catch (e) { addSystemLog(`AI ERROR: ${e.message}`, 'error'); }
+}
+
+// --- 5. ROUTES ---
+app.post('/webhook', (req, res) => {
+    res.status(200).send('OK');
+    const payload = req.body;
+    if (payload.event === 'messages.upsert') {
+        const jid = payload.data.key.remoteJid;
+        const text = payload.data.message?.conversation || payload.data.message?.extendedTextMessage?.text;
+        if (text && !payload.data.key.fromMe) {
+            addSystemLog(`WEBHOOK MSG: ${text}`, 'success', { headers: req.headers, body: payload });
+            handleAIProcess(jid, text);
+        }
+    }
+});
+
+// Admin Dashboard Sync API
+app.get('/api/routes', (req, res) => res.json(DATA_STORE.routes));
+app.get('/api/tickets', (req, res) => res.json(DATA_STORE.tickets));
+app.get('/api/debug/system-logs', (req, res) => res.json(DATA_STORE.logs));
+app.get('/api/debug/raw-payloads', (req, res) => res.json(DATA_STORE.raw));
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog("SYSTEM: Config updated manually via dashboard", "info");
     res.json({ success: true });
 });
-app.get('/api/debug/system-logs', (req, res) => res.json(systemLogs));
-app.get('/api/debug/raw-payloads', (req, res) => res.json(rawPayloads));
 
-// Static Files
+// Static Hosting
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-// --- 6. START SERVER ---
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n==================================================`);
-    console.log(`MARTHA ENGINE ONLINE | PORT: ${PORT}`);
-    console.log(`WEBHOOK: /webhook (Binding: 0.0.0.0)`);
-    console.log(`==================================================\n`);
-    addSystemLog(`SERVER ONLINE: Initialized on Port ${PORT}`, 'success');
+    console.log(`ENA COACH MASTER SERVER ONLINE | PORT: ${PORT}`);
 });

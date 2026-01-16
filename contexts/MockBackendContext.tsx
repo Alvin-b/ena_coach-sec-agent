@@ -1,7 +1,6 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { BusRoute, Ticket, Complaint, User, BusLocation, Contact } from '../types';
-import { ALL_ROUTES } from '../data/enaRoutes';
+import { BusRoute, Ticket, Complaint, User, Contact } from '../types';
 
 export interface WhatsAppConfigData {
   apiUrl: string;
@@ -31,7 +30,7 @@ interface MockBackendContextType {
   initiatePayment: (phoneNumber: string, amount: number) => Promise<any>;
   verifyPayment: (checkoutRequestId: string) => Promise<any>;
   
-  bookTicket: (passengerName: string, routeId: string, phoneNumber: string, checkoutRequestId?: string) => Ticket | null;
+  bookTicket: (passengerName: string, routeId: string, phoneNumber: string, checkoutRequestId?: string) => Promise<Ticket | null>;
   validateTicket: (ticketId: string) => { success: boolean; message: string; ticket?: Ticket };
   
   fetchContacts: () => Promise<void>;
@@ -57,36 +56,33 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [routes, setRoutes] = useState<BusRoute[]>([]);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [complaints, setComplaints] = useState<Complaint[]>([]);
-  const [users, setUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
   
   const [whatsappConfig, setWhatsappConfig] = useState<WhatsAppConfigData>({
-    apiUrl: 'https://api.evolution-api.com',
+    apiUrl: '',
     apiToken: '',
-    instanceName: 'EnaCoachInstance'
+    instanceName: 'EnaCoach'
   });
 
+  const syncWithServer = async () => {
+      try {
+          const [rRes, tRes] = await Promise.all([
+              fetch('/api/routes'),
+              fetch('/api/tickets')
+          ]);
+          if (rRes.ok) setRoutes(await rRes.json());
+          if (tRes.ok) setTickets(await tRes.json());
+      } catch (e) { console.error("Sync failed", e); }
+  };
+
   useEffect(() => {
-      fetchAllRoutes();
-      fetchContacts();
+      syncWithServer();
+      const interval = setInterval(syncWithServer, 3000); // Polling for new WhatsApp bookings
+      return () => clearInterval(interval);
   }, []);
 
-  const fetchAllRoutes = async () => {
-      try {
-          const res = await fetch('/api/routes');
-          if (res.ok) {
-              const data = await res.json();
-              setRoutes(data);
-              return;
-          }
-      } catch (e) { console.error("API Route fetch failed", e); }
-      setRoutes(ALL_ROUTES as BusRoute[]);
-  };
-
-  const updateRoutePrice = async (routeId: string, newPrice: number) => {
-      return updateRoute(routeId, { price: newPrice });
-  };
+  const fetchAllRoutes = async () => syncWithServer();
 
   const updateRoute = async (routeId: string, updates: Partial<BusRoute>) => {
     try {
@@ -95,72 +91,33 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(updates)
         });
-        if (res.ok) {
-            await fetchAllRoutes();
-            return true;
-        }
+        if (res.ok) { await syncWithServer(); return true; }
     } catch (e) { console.error(e); }
     return false;
   };
 
-  const deleteRoute = async (routeId: string) => {
-    try {
-        const res = await fetch(`/api/routes/${routeId}`, { method: 'DELETE' });
-        if (res.ok) {
-            await fetchAllRoutes();
-            return true;
-        }
-    } catch (e) { console.error(e); }
-    return false;
-  };
-
-  const addRoute = async (routeData: Partial<BusRoute>) => {
-      try {
-          const res = await fetch('/api/routes', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(routeData)
-          });
-          if (res.ok) {
-              await fetchAllRoutes();
-              return true;
-          }
-      } catch (e) { console.error(e); }
-      return false;
-  };
+  const updateRoutePrice = (id: string, price: number) => updateRoute(id, { price });
+  const deleteRoute = async () => false;
+  const addRoute = async () => false;
 
   const searchRoutes = (origin: string, destination: string) => {
-    const termOrigin = origin.toLowerCase();
-    const termDest = destination.toLowerCase();
-    return routes.filter((r) => r.origin.toLowerCase().includes(termOrigin) && r.destination.toLowerCase().includes(termDest));
+    return routes.filter(r => 
+        r.origin.toLowerCase().includes(origin.toLowerCase()) && 
+        r.destination.toLowerCase().includes(destination.toLowerCase())
+    );
   };
 
-  const getInventory = async (date: string): Promise<BusRoute[]> => {
-      await fetchAllRoutes();
-      return routes;
-  };
+  const getInventory = async () => routes;
+  const getRouteManifest = async () => ({ passengers: [], total: 0 });
+  const checkSeats = () => 0;
 
-  const getRouteManifest = async (routeId: string, date: string): Promise<any> => {
-      return { passengers: [], total: 0 };
-  };
+  const initiatePayment = async () => ({ success: true, checkoutRequestId: "TEST-" + Date.now() });
+  const verifyPayment = async () => ({ status: 'COMPLETED' });
 
-  const checkSeats = (routeId: string) => {
-    const route = routes.find((r) => r.id === routeId);
-    return route ? route.availableSeats : 0;
-  };
-
-  const initiatePayment = async (phoneNumber: string, amount: number): Promise<any> => {
-      return { success: true, checkoutRequestId: "TEST-" + Date.now() };
-  };
-
-  const verifyPayment = async (checkoutRequestId: string): Promise<any> => {
-      return { status: 'COMPLETED' };
-  };
-
-  const bookTicket = (passengerName: string, routeId: string, phoneNumber: string, checkoutRequestId?: string) => {
+  const bookTicket = async (passengerName: string, routeId: string, phoneNumber: string) => {
     const route = routes.find(r => r.id === routeId);
     if (!route) return null;
-    const ticketId = `TKT-${Math.floor(Math.random() * 10000)}`;
+    const ticketId = `TKT-${Math.floor(Math.random() * 9000) + 1000}`;
     const newTicket: Ticket = {
       id: ticketId,
       passengerName,
@@ -168,38 +125,34 @@ export const MockBackendProvider: React.FC<{ children: React.ReactNode }> = ({ c
       seatNumber: 1,
       status: 'booked',
       boardingStatus: 'pending',
-      paymentId: checkoutRequestId || `V-PAY`,
+      paymentId: 'DARAJA-TEST',
       bookingTime: new Date().toISOString(),
       bookingDate: new Date().toISOString(),
       routeDetails: route,
       qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${ticketId}`
     };
-    setTickets((prev) => [newTicket, ...prev]);
+    // In a real scenario, we'd POST this to the server too
+    setTickets(prev => [newTicket, ...prev]);
     return newTicket;
   };
 
   const validateTicket = (ticketId: string) => {
     const ticket = tickets.find(t => t.id === ticketId);
-    if (!ticket) return { success: false, message: 'Invalid Ticket ID.' };
-    return { success: true, message: `Welcome, ${ticket.passengerName}.`, ticket };
+    if (!ticket) return { success: false, message: 'Invalid Ticket.' };
+    return { success: true, message: `Welcome ${ticket.passengerName}`, ticket };
   };
 
-  const logComplaint = (customerName: string, issue: string, severity: 'low' | 'medium' | 'high') => {
-    const id = `CMP-${Math.floor(Math.random() * 10000)}`;
-    setComplaints(prev => [{ id, customerName, issue, severity, status: 'open', timestamp: new Date().toISOString() }, ...prev]);
-    return id;
-  };
-
-  const fetchContacts = async () => { setContacts([]); };
-  const broadcastMessage = async (message: string, contactList: string[]) => ({ success: true, count: contactList.length });
-  const getFinancialReport = () => ({ totalRevenue: 0, ticketCount: 0, averagePrice: 0 });
+  const logComplaint = () => "CMP-123";
+  const fetchContacts = async () => {};
+  const broadcastMessage = async () => ({ success: true, count: 0 });
+  const getFinancialReport = () => ({ totalRevenue: tickets.reduce((a,t) => a + (t.routeDetails?.price || 0), 0), ticketCount: tickets.length, averagePrice: 0 });
   const getOccupancyStats = () => ({ totalCapacity: 100, totalBooked: 20, utilization: '20%' });
   const getComplaints = () => complaints;
   const resolveComplaint = async () => ({ success: true, message: "OK", notificationStatus: "Sent" });
   const login = async () => true;
   const register = async () => true;
   const logout = () => setCurrentUser(null);
-  const getUserTickets = () => [];
+  const getUserTickets = () => tickets;
   const getBusStatus = async () => ({ status: 'On Time' });
   const saveWhatsAppConfig = (config: WhatsAppConfigData) => setWhatsappConfig(config);
 
