@@ -59,9 +59,19 @@ const WhatsAppConfig: React.FC = () => {
                 apiKey: geminiKey
             })
         });
-        alert("Config Saved!");
+        alert("Configuration Synchronized!");
     } catch (e) { alert("Save failed."); }
     setIsSaving(false);
+  };
+
+  const simulateTest = async () => {
+      try {
+          await fetch('/webhook', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-test-header': 'Simulated' },
+              body: JSON.stringify({ event: 'test.signal', message: 'Hello from Internal Simulator' })
+          });
+      } catch (e) {}
   };
 
   return (
@@ -77,7 +87,7 @@ const WhatsAppConfig: React.FC = () => {
                       </div>
                       <div>
                           <h2 className="text-2xl font-black text-gray-900">Webhook Node</h2>
-                          <p className="text-[10px] font-black uppercase tracking-widest text-red-600 mt-1">Status: Listening</p>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-red-600 mt-1">Status: Active & Sniffing</p>
                       </div>
                   </div>
                   
@@ -90,16 +100,20 @@ const WhatsAppConfig: React.FC = () => {
                           </button>
                       </div>
                   </div>
+                  <button onClick={simulateTest} className="w-full py-4 rounded-2xl border-2 border-dashed border-gray-200 text-gray-400 font-bold text-xs uppercase hover:bg-gray-50 transition">
+                      Run Internal Connectivity Test
+                  </button>
               </div>
 
-              <div className="bg-gray-950 rounded-[2.5rem] p-10 text-white flex flex-col justify-center">
-                  <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-500 mb-8">Signal Pulse</h3>
+              <div className="bg-gray-950 rounded-[2.5rem] p-10 text-white flex flex-col justify-center relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-64 h-64 bg-red-600/10 blur-[100px]"></div>
+                  <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-500 mb-8">Signal Heartbeat</h3>
                   <div className="flex items-center gap-6">
                       <div className={`w-4 h-4 rounded-full ${lastTraffic ? 'bg-green-500 shadow-[0_0_20px_#22c55e]' : 'bg-gray-800 animate-pulse'}`}></div>
                       <div>
-                          <p className="text-xl font-black">{lastTraffic ? 'Online & Detecting' : 'Waiting for Evolution...'}</p>
+                          <p className="text-xl font-black">{lastTraffic ? 'Signals Detected' : 'Idle - Waiting for Traffic'}</p>
                           <p className="text-xs text-gray-500 font-bold mt-1">
-                              {lastTraffic ? `Last Hit: ${lastTraffic.toLocaleTimeString()}` : 'Check Evolution API dashboard'}
+                              {lastTraffic ? `Last Activity: ${lastTraffic.toLocaleTimeString()}` : 'Verify Evolution API Webhook Config'}
                           </p>
                       </div>
                   </div>
@@ -108,63 +122,78 @@ const WhatsAppConfig: React.FC = () => {
       </div>
 
       {/* Traffic Terminal */}
-      <div className="bg-[#0c0c0e] rounded-[2.5rem] border border-gray-800 shadow-2xl flex flex-col h-[600px] overflow-hidden">
+      <div className="bg-[#0c0c0e] rounded-[2.5rem] border border-gray-800 shadow-2xl flex flex-col h-[650px] overflow-hidden">
           <div className="bg-gray-900/50 p-8 border-b border-gray-800 flex justify-between items-center">
               <div className="flex items-center gap-4">
                   <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>
-                  <h3 className="text-xs font-black uppercase tracking-[0.2em] text-gray-400">Advanced Signal Sniffer</h3>
+                  <h3 className="text-xs font-black uppercase tracking-[0.2em] text-gray-400">Master Live Terminal</h3>
               </div>
               <div className="flex gap-2">
                   <button onClick={() => setShowRaw(false)} className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${!showRaw ? 'bg-white text-black shadow-lg' : 'text-gray-500 hover:text-white'}`}>Process Logs</button>
-                  <button onClick={() => setShowRaw(true)} className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${showRaw ? 'bg-red-600 text-white shadow-lg' : 'text-gray-500 hover:text-white'}`}>Raw Packets</button>
+                  <button onClick={() => setShowRaw(true)} className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${showRaw ? 'bg-red-600 text-white shadow-lg' : 'text-gray-500 hover:text-white'}`}>Raw Signals</button>
               </div>
           </div>
           
-          <div className="flex-1 overflow-y-auto p-8 space-y-4 font-mono scrollbar-hide">
+          <div className="flex-1 overflow-y-auto p-8 space-y-6 font-mono scrollbar-hide">
               {showRaw ? (
-                  rawPayloads.map((p, i) => (
-                    <div key={i} className="bg-gray-900 p-6 rounded-[1.5rem] border border-gray-800 animate-fade-in space-y-4">
-                        <div className="flex justify-between border-b border-gray-800 pb-2">
-                            <span className="text-[10px] text-gray-500">{new Date(p.timestamp).toLocaleString()}</span>
-                            <span className="text-[10px] text-red-600 uppercase font-black">Inbound Packet</span>
-                        </div>
-                        <div>
-                            <p className="text-[9px] text-gray-600 font-black uppercase mb-1">HTTP Headers</p>
-                            <pre className="text-blue-400 text-[10px] bg-black/40 p-3 rounded-lg overflow-x-auto">{JSON.stringify(p.headers, null, 2)}</pre>
-                        </div>
-                        <div>
-                            <p className="text-[9px] text-gray-600 font-black uppercase mb-1">JSON Payload</p>
-                            <pre className="text-green-500 text-[10px] bg-black/40 p-3 rounded-lg overflow-x-auto">{JSON.stringify(p.body, null, 2)}</pre>
-                        </div>
-                    </div>
-                  ))
+                  rawPayloads.length === 0 ? (
+                      <div className="h-full flex items-center justify-center text-gray-700 text-[10px] uppercase font-black tracking-widest">Awaiting raw packets...</div>
+                  ) : (
+                    rawPayloads.map((p, i) => (
+                      <div key={i} className="bg-gray-900/50 p-6 rounded-[2rem] border border-gray-800 animate-fade-in-up space-y-6">
+                          <div className="flex justify-between items-center border-b border-gray-800 pb-4">
+                              <span className="text-[10px] text-gray-500 font-bold">{new Date(p.timestamp).toLocaleString()}</span>
+                              <span className="text-[10px] text-red-600 uppercase font-black tracking-widest">Inbound Signal</span>
+                          </div>
+                          
+                          <div className="space-y-2">
+                              <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest">HTTP Headers</p>
+                              <pre className="text-blue-400 text-[10px] bg-black/40 p-4 rounded-xl overflow-x-auto border border-white/5">{JSON.stringify(p.headers, null, 2)}</pre>
+                          </div>
+
+                          <div className="space-y-2">
+                              <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest">Body Payload</p>
+                              <pre className="text-green-500 text-[10px] bg-black/40 p-4 rounded-xl overflow-x-auto border border-white/5">
+                                {typeof p.body === 'string' ? p.body : JSON.stringify(p.body, null, 2)}
+                              </pre>
+                          </div>
+                      </div>
+                    ))
+                  )
               ) : (
-                  terminalLogs.map((log, i) => (
-                    <div key={i} className={`p-4 rounded-xl border flex gap-4 ${log.type === 'error' ? 'bg-red-950/20 border-red-900/40' : log.type === 'success' ? 'bg-green-950/10 border-green-900/30' : 'bg-gray-900/50 border-gray-800'}`}>
-                        <span className="text-[10px] text-gray-500 font-black pt-1 whitespace-nowrap">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                        <p className={`text-xs font-bold ${log.type === 'error' ? 'text-red-400' : log.type === 'success' ? 'text-green-400' : 'text-gray-300'}`}>{log.msg}</p>
-                    </div>
-                  ))
+                  terminalLogs.length === 0 ? (
+                      <div className="h-full flex items-center justify-center text-gray-700 text-[10px] uppercase font-black tracking-widest">Initializing Terminal...</div>
+                  ) : (
+                    terminalLogs.map((log, i) => (
+                      <div key={i} className={`p-5 rounded-2xl border flex gap-6 items-start transition-all ${log.type === 'error' ? 'bg-red-950/20 border-red-900/40' : log.type === 'success' ? 'bg-green-950/10 border-green-900/30' : 'bg-gray-900/50 border-gray-800'}`}>
+                          <span className="text-[10px] text-gray-500 font-black pt-1 whitespace-nowrap">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                          <p className={`text-xs font-bold leading-relaxed ${log.type === 'error' ? 'text-red-400' : log.type === 'success' ? 'text-green-400' : 'text-gray-300'}`}>{log.msg}</p>
+                      </div>
+                    ))
+                  )
               )}
           </div>
       </div>
 
-      {/* Engine Configuration */}
+      {/* Configuration */}
       <div className="bg-white rounded-[2.5rem] shadow-xl border border-gray-100 p-10">
           <div className="flex justify-between items-center mb-10">
-              <h2 className="text-xl font-black uppercase tracking-widest">Master Parameters</h2>
-              <button onClick={handleSave} disabled={isSaving} className="bg-red-600 text-white px-8 py-4 rounded-2xl font-black text-xs uppercase hover:bg-red-700 transition">
-                  {isSaving ? 'Syncing...' : 'Sync Config'}
+              <div>
+                  <h2 className="text-xl font-black uppercase tracking-widest">Engine Parameters</h2>
+                  <p className="text-[10px] text-gray-400 font-bold uppercase mt-1">Configure API Endpoints & Auth</p>
+              </div>
+              <button onClick={handleSave} disabled={isSaving} className="bg-red-600 text-white px-10 py-5 rounded-2xl font-black text-xs uppercase hover:bg-red-700 transition shadow-lg active:scale-95">
+                  {isSaving ? <i className="fas fa-sync fa-spin"></i> : 'Sync Settings'}
               </button>
           </div>
-          <div className="grid md:grid-cols-2 gap-8">
+          <div className="grid md:grid-cols-2 gap-10">
               <div className="space-y-4">
-                  <label className="text-[10px] font-black uppercase text-gray-400">Evolution URL</label>
-                  <input value={apiUrl} onChange={e => setApiUrl(e.target.value)} className="w-full bg-gray-50 p-4 rounded-xl border outline-none focus:border-red-600" />
+                  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Evolution API URL</label>
+                  <input value={apiUrl} onChange={e => setApiUrl(e.target.value)} placeholder="https://..." className="w-full bg-gray-50 p-5 rounded-2xl border-2 border-transparent focus:border-red-600 outline-none font-bold text-gray-800 transition-all" />
               </div>
               <div className="space-y-4">
-                  <label className="text-[10px] font-black uppercase text-gray-400">Gemini AI Key</label>
-                  <input type="password" value={geminiKey} onChange={e => setGeminiKey(e.target.value)} className="w-full bg-gray-50 p-4 rounded-xl border outline-none focus:border-red-600" />
+                  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Gemini API Key</label>
+                  <input type="password" value={geminiKey} onChange={e => setGeminiKey(e.target.value)} className="w-full bg-gray-50 p-5 rounded-2xl border-2 border-transparent focus:border-red-600 outline-none font-bold text-gray-800 transition-all" />
               </div>
           </div>
       </div>
