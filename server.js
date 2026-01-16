@@ -1,7 +1,7 @@
 
 /**
  * Ena Coach AI Agent - Master Unified Server
- * Binding: 0.0.0.0 (All Interfaces)
+ * Environment-Aware Binding for Fly.io & Render
  */
 
 import 'dotenv/config'; 
@@ -13,8 +13,10 @@ import { GoogleGenAI } from "@google/genai";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Fly.io expects 3000, Render injects its own via process.env.PORT
-const PORT = process.env.PORT || 3000;
+// FLY.IO vs RENDER PORT LOGIC
+// Fly usually expects 3000. Render usually expects 10000.
+// We detect FLY_APP_NAME (set by Fly) to force 3000 if there's any doubt.
+const PORT = process.env.FLY_APP_NAME ? 3000 : (process.env.PORT || 3000);
 
 // --- Runtime State ---
 const runtimeConfig = {
@@ -26,7 +28,6 @@ const runtimeConfig = {
     darajaSecret: (process.env.DARAJA_SECRET || '').trim(),
     darajaPasskey: (process.env.DARAJA_PASSKEY || '').trim(),
     darajaShortcode: (process.env.DARAJA_SHORTCODE || '5512238').trim(),
-    darajaCallbackUrl: 'https://ena-coach-sec-agent.onrender.com/callback/mpesa',
 };
 
 const systemLogs = []; 
@@ -46,113 +47,89 @@ function addSystemLog(msg, type = 'info', raw = null) {
 const app = express();
 
 // --- 1. GLOBAL TRAFFIC INTERCEPTOR ---
-// Logs EVERY request to ANY path to verify connectivity.
 app.use((req, res, next) => {
-    const logMsg = `HIT: ${req.method} ${req.url} from ${req.ip || req.headers['x-forwarded-for']}`;
+    // This logs every single incoming hit. If you see this in the dashboard, the server is "alive" to the world.
+    const logMsg = `[INBOUND] ${req.method} ${req.url} (Host: ${req.headers.host})`;
     addSystemLog(logMsg, 'info');
     next();
 });
 
-// Use a custom raw body parser to capture signals even if headers are missing
+// Robust JSON parsing with raw body capture for debugging
 app.use(express.json({ 
     limit: '50mb',
-    verify: (req, res, buf) => {
-        req.rawBody = buf.toString();
-    }
+    verify: (req, res, buf) => { req.rawBody = buf.toString(); }
 }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// --- 2. HEALTH & DIAGNOSTIC ROUTES ---
-app.get('/health', (req, res) => res.status(200).send("OK - Server is healthy and listening on 0.0.0.0"));
+// --- 2. DIAGNOSTIC ROUTES ---
+app.get('/health', (req, res) => res.json({ status: 'UP', port: PORT, host: req.headers.host }));
 
-// Enable GET testing for /webhook
+// GET /webhook (For manual browser checks)
 app.get('/webhook', (req, res) => {
-    addSystemLog("GET /webhook: Health check successful", "success");
-    res.send(`
-        <div style="font-family: sans-serif; padding: 40px; text-align: center; background: #f4f4f4; height: 100vh;">
-            <h1 style="color: #d32f2f;">Ena Coach Webhook is ONLINE</h1>
-            <p>Your server is listening on <b>0.0.0.0:${PORT}</b></p>
-            <p>Ready to receive POST signals from Evolution API.</p>
-            <hr style="max-width: 400px; margin: 20px auto; border: 1px solid #ddd;">
-            <p style="font-size: 12px; color: #888;">Render Discovery URL: ${req.headers.host}</p>
-        </div>
-    `);
+    addSystemLog("WEBHOOK: Browser ping (GET) detected", "success");
+    res.send(`<h1>Webhook Active</h1><p>Listening for Evolution API on Port ${PORT}</p>`);
 });
 
 // --- 3. THE WEBHOOK HANDLER ---
 app.post('/webhook', (req, res) => {
-    // Respond 200 immediately to prevent Evolution API from retrying/timing out
+    // Acknowledge immediately
     res.status(200).send('OK');
 
     const payload = req.body;
     
-    // If JSON parsing failed but we have a raw body, log it as an error
-    if ((!payload || Object.keys(payload).length === 0) && req.rawBody) {
-        addSystemLog("WEBHOOK: Received data but JSON parsing failed", "error", { raw: req.rawBody });
-        return;
-    }
+    // Log exactly what arrived
+    const eventType = payload.event || payload.type || "unknown";
+    addSystemLog(`WEBHOOK SIGNAL: ${eventType}`, 'info', payload);
 
     if (!payload || Object.keys(payload).length === 0) {
-        addSystemLog("WEBHOOK: Received empty body", "warning");
+        addSystemLog("WEBHOOK ERROR: Payload is empty. Check Evolution API body headers.", "error");
         return;
     }
 
-    const eventName = payload.event || payload.type || "unknown_event";
-    addSystemLog(`SIGNAL ARRIVED: ${eventName}`, 'info', payload);
-
-    // Extraction logic
+    // Extraction for Evolution API v1 and v2
     let jid = null;
     let text = null;
     let fromMe = false;
 
-    // Check Evolution API Structure
     if (payload.event === 'messages.upsert' && payload.data) {
         jid = payload.data.key?.remoteJid;
         fromMe = payload.data.key?.fromMe || false;
         text = payload.data.message?.conversation || 
-               payload.data.message?.extendedTextMessage?.text || 
-               payload.data.message?.imageMessage?.caption;
+               payload.data.message?.extendedTextMessage?.text;
     } else {
-        // Broad Fallback
-        jid = payload.sender || payload.remoteJid || payload.from;
-        text = payload.text || payload.body || payload.message?.conversation || payload.data?.message?.conversation;
-        fromMe = payload.fromMe || payload.data?.key?.fromMe || false;
+        // Fallback for direct message events
+        jid = payload.sender || payload.remoteJid;
+        text = payload.text || payload.body || payload.message?.conversation;
+        fromMe = payload.fromMe || false;
     }
 
     if (jid && text && !fromMe) {
-        addSystemLog(`PROCESSING MSG: "${text}" from ${jid}`, 'success');
+        addSystemLog(`VALID MSG: "${text}" from ${jid}`, 'success');
         handleAIProcess(jid, text);
     } else if (fromMe) {
-        addSystemLog(`IGNORED: Signal from bot itself`, 'info');
+        addSystemLog(`IGNORED: Message is from the bot itself`, 'info');
     } else {
-        addSystemLog(`IGNORED: Missing JID or Text in structure`, 'warning');
+        addSystemLog(`PARSING FAILED: Could not map JID/Text. Check "Show Payload" in dashboard.`, 'warning');
     }
 });
 
-// --- 4. AI & M-PESA LOGIC ---
-async function handleAIProcess(phoneNumber, incomingText) {
-    if (!runtimeConfig.apiKey) {
-        addSystemLog("AI ERROR: Gemini API Key is missing", "error");
-        return;
-    }
+// --- 4. AI ENGINE ---
+async function handleAIProcess(jid, msg) {
+    if (!runtimeConfig.apiKey) return addSystemLog("AI HALT: No Gemini API Key", "error");
 
     try {
         const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
-        const response = await ai.models.generateContent({ 
-            model: 'gemini-3-flash-preview', 
-            contents: `User: "${incomingText}". Reply as Martha, the Ena Coach assistant.`,
-            config: { systemInstruction: "You are Martha, Ena Coach assistant. Keep it concise. If payment is needed, mention M-Pesa." }
+        const result = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: `User: "${msg}". You are Martha from Ena Coach. Be helpful and short.`,
         });
 
-        if (response.text) {
-            await sendWhatsApp(phoneNumber, response.text);
-            if (response.text.toLowerCase().includes('m-pesa')) {
-                addSystemLog(`TRIGGERING STK PUSH for ${phoneNumber}`, 'info');
-                // triggerSTKPush logic integration
-            }
+        if (result.text) {
+            addSystemLog(`AI RESPONSE GENERATED for ${jid}`, 'success');
+            await sendWhatsApp(jid, result.text);
         }
     } catch (e) {
-        addSystemLog(`AI ERROR: ${e.message}`, 'error');
+        addSystemLog(`AI ENGINE ERROR: ${e.message}`, 'error');
     }
 }
 
@@ -168,30 +145,32 @@ async function sendWhatsApp(jid, text) {
             headers: { 'Content-Type': 'application/json', 'apikey': runtimeConfig.evolutionToken },
             body: JSON.stringify({ number: cleanJid, text: text })
         });
-        if (res.ok) addSystemLog(`REPLY SENT: ${cleanJid}`, 'success');
-        else addSystemLog(`WA FAILED: ${res.status}`, 'error');
-    } catch(e) { addSystemLog(`WA ERROR: ${e.message}`, 'error'); }
+        if (res.ok) addSystemLog(`WA SENT to ${cleanJid}`, 'success');
+        else addSystemLog(`WA SEND FAILED: Status ${res.status}`, 'error');
+    } catch(e) { addSystemLog(`WA NETWORK ERROR: ${e.message}`, 'error'); }
 }
 
-// --- 5. ADMIN & SYSTEM ---
+// --- 5. SYSTEM ADMIN API ---
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog("SYSTEM: Configuration updated", "info");
+    addSystemLog("SYSTEM: Config updated", "info");
     res.json({ success: true });
 });
 app.get('/api/debug/system-logs', (req, res) => res.json(systemLogs));
 app.get('/api/debug/raw-payloads', (req, res) => res.json(rawPayloads));
 
+// Static Files
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
 // --- 6. START SERVER ---
+// We bind to 0.0.0.0 specifically to allow external routing
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n==================================================`);
-    console.log(`MARTHA AI ENGINE: ONLINE & BOUND TO 0.0.0.0`);
-    console.log(`PORT: ${PORT}`);
-    console.log(`WEBHOOK PATH: /webhook`);
+    console.log(`MARTHA ENGINE ONLINE | PORT: ${PORT}`);
+    console.log(`BINDING: 0.0.0.0 (Global Access)`);
+    console.log(`FLY_APP_NAME: ${process.env.FLY_APP_NAME || 'Not Detected'}`);
     console.log(`==================================================\n`);
-    addSystemLog(`SERVER ONLINE: Listening on 0.0.0.0:${PORT}`, 'success');
+    addSystemLog(`SERVER BOOTED: Bound to 0.0.0.0:${PORT}`, 'success');
 });
