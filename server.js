@@ -1,7 +1,7 @@
 
 /**
  * Ena Coach AI Agent - Master Unified Server
- * Optimized for Evolution API Webhooks, Persistence, and Media
+ * Optimized for Evolution API Webhooks & Robust Stream Handling
  */
 
 import 'dotenv/config'; 
@@ -25,7 +25,7 @@ const DATA_STORE = {
     ],
     tickets: [],
     logs: [],
-    raw: [] // Buffer for the Raw Signals sniffer
+    raw: [] 
 };
 
 const runtimeConfig = {
@@ -56,11 +56,15 @@ function addSystemLog(msg, type = 'info', meta = null) {
 
 const app = express();
 
-// --- 2. ROBUST BODY PARSING (Captures Raw Data for Sniffer) ---
+/**
+ * CRITICAL FIX: Robust Body Parsing
+ * We use 'verify' to capture the raw body without consuming the stream manually.
+ * This prevents the "req.body is empty" issue common when Evolution sends JSON.
+ */
 app.use(express.json({
     limit: '50mb',
     verify: (req, res, buf) => {
-        req.rawBody = buf.toString(); // Essential for the Sniffer
+        req.rawBody = buf.toString();
     }
 }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -91,23 +95,37 @@ const aiTools = [
     }
 ];
 
-// --- 4. EVOLUTION API INTEGRATION (Media Support) ---
-async function sendWhatsApp(jid, text) {
-    if (!runtimeConfig.evolutionUrl || !runtimeConfig.evolutionToken) return;
-    const url = `${runtimeConfig.evolutionUrl.replace(/\/$/, '')}/message/sendText/${runtimeConfig.instanceName}`;
+// --- 4. EVOLUTION API INTEGRATION ---
+async function sendWhatsApp(jid, text, detectedInstance = null) {
+    const instance = detectedInstance || runtimeConfig.instanceName;
+    if (!runtimeConfig.evolutionUrl || !runtimeConfig.evolutionToken) {
+        addSystemLog("WA ERROR: Missing Evolution URL or Token", "error");
+        return;
+    }
+    
+    const url = `${runtimeConfig.evolutionUrl.replace(/\/$/, '')}/message/sendText/${instance}`;
+    const phoneNumber = jid.split('@')[0];
+    
     try {
-        await fetch(url, {
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'apikey': runtimeConfig.evolutionToken },
-            body: JSON.stringify({ number: jid.split('@')[0], text })
+            body: JSON.stringify({ number: phoneNumber, text })
         });
-        addSystemLog(`WA MESSAGE SENT: ${jid}`, 'success');
+        
+        if (!response.ok) {
+            const errData = await response.text();
+            addSystemLog(`WA SEND FAILED (${response.status}): ${errData}`, "error");
+        } else {
+            addSystemLog(`REPLY SENT to ${phoneNumber} via instance [${instance}]`, 'success');
+        }
     } catch (e) { addSystemLog(`WA ERROR: ${e.message}`, 'error'); }
 }
 
-async function sendWhatsAppMedia(jid, caption, mediaUrl) {
-    if (!runtimeConfig.evolutionUrl || !runtimeConfig.evolutionToken) return;
-    const url = `${runtimeConfig.evolutionUrl.replace(/\/$/, '')}/message/sendMedia/${runtimeConfig.instanceName}`;
+async function sendWhatsAppMedia(jid, caption, mediaUrl, detectedInstance = null) {
+    const instance = detectedInstance || runtimeConfig.instanceName;
+    if (!runtimeConfig.evolutionUrl) return;
+    const url = `${runtimeConfig.evolutionUrl.replace(/\/$/, '')}/message/sendMedia/${instance}`;
     try {
         const res = await fetch(url, {
             method: 'POST',
@@ -119,21 +137,24 @@ async function sendWhatsAppMedia(jid, caption, mediaUrl) {
                 caption: caption
             })
         });
-        if (res.ok) addSystemLog(`QR TICKET SENT: ${jid}`, 'success');
+        if (res.ok) addSystemLog(`QR TICKET SENT via instance [${instance}]`, 'success');
     } catch (e) { addSystemLog(`MEDIA ERROR: ${e.message}`, 'error'); }
 }
 
-// --- 5. AI LOGIC ---
-async function handleAIProcess(jid, msg) {
-    if (!runtimeConfig.apiKey) return;
+// --- 5. AI ENGINE ---
+async function handleAIProcess(jid, msg, instance) {
+    if (!runtimeConfig.apiKey) {
+        addSystemLog("AI HALT: No Gemini API Key provided in dashboard or env", "error");
+        return;
+    }
     
     const ai = new GoogleGenAI({ apiKey: runtimeConfig.apiKey });
     try {
         const result = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
-            contents: `User: "${msg}"`,
+            contents: `User (on WhatsApp): "${msg}"`,
             config: {
-                systemInstruction: "You are Martha from Ena Coach. Help users book tickets. When finalized, use bookTicket tool. Keep WhatsApp replies short.",
+                systemInstruction: "You are Martha, the Ena Coach AI Agent. Help users book tickets. Keep responses concise for WhatsApp. If they confirm a route, use bookTicket.",
                 tools: [{ functionDeclarations: aiTools }]
             }
         });
@@ -146,9 +167,9 @@ async function handleAIProcess(jid, msg) {
                         r.destination.toLowerCase().includes(call.args.destination.toLowerCase())
                     );
                     const reply = matches.length > 0 
-                        ? `Found: ${matches.map(r => `${r.id}: ${r.origin}->${r.destination} @ KES ${r.price}`).join('. ')}`
-                        : "No routes found.";
-                    await sendWhatsApp(jid, reply);
+                        ? `I found these routes: ${matches.map(r => `${r.id}: ${r.origin}->${r.destination} @ KES ${r.price}`).join('. ')}`
+                        : "Sorry, I couldn't find any direct routes for that search.";
+                    await sendWhatsApp(jid, reply, instance);
                 }
                 if (call.name === 'bookTicket') {
                     const ticketId = `TKT-${Math.floor(Math.random() * 8999) + 1000}`;
@@ -163,51 +184,58 @@ async function handleAIProcess(jid, msg) {
                     };
                     DATA_STORE.tickets.unshift(newTicket);
                     
-                    await sendWhatsApp(jid, `✅ Confirmed! Ticket ${ticketId} generated for ${call.args.passengerName}. Sending your QR code...`);
+                    await sendWhatsApp(jid, `✅ Booking Successful! Ticket ${ticketId} generated for ${call.args.passengerName}. Sending your QR ticket now...`, instance);
                     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${ticketId}`;
-                    await sendWhatsAppMedia(jid, `Your Ena Coach Ticket: ${ticketId}`, qrUrl);
+                    await sendWhatsAppMedia(jid, `Ena Coach Digital Ticket`, qrUrl, instance);
                 }
             }
         } else if (result.text) {
-            await sendWhatsApp(jid, result.text);
+            await sendWhatsApp(jid, result.text, instance);
         }
-    } catch (e) { addSystemLog(`AI ENGINE ERROR: ${e.message}`, 'error'); }
+    } catch (e) { addSystemLog(`AI ERROR: ${e.message}`, 'error'); }
 }
 
-// --- 6. UNIVERSAL WEBHOOK HANDLER ---
+// --- 6. UNIFIED WEBHOOK HANDLER ---
 app.post('/webhook', (req, res) => {
-    // 1. Respond instantly to Evolution API
+    // 1. Respond 200 OK immediately (required by Evolution API to prevent retries)
     res.status(200).send("OK");
 
-    // 2. Greedy Data Collection
-    let payload = req.body;
+    // 2. Parse Payload
+    const payload = req.body;
     
-    // If express.json() failed to parse due to Content-Type, try manual parse of rawBody
-    if ((!payload || Object.keys(payload).length === 0) && req.rawBody) {
-        try { payload = JSON.parse(req.rawBody); } catch (e) { /* ignore malformed */ }
-    }
-
-    // Log EVERY POST request for debugging
-    addSystemLog(`TRAFFIC DETECTED: ${req.method} /webhook`, 'info', { 
+    // Diagnostic logging for the sniffer
+    addSystemLog(`INCOMING WEBHOOK: ${req.method} /webhook`, 'info', { 
         headers: req.headers, 
         body: payload || req.rawBody 
     });
 
-    if (!payload) return;
+    if (!payload || Object.keys(payload).length === 0) {
+        addSystemLog("WEBHOOK IGNORED: Empty body. Check Content-Type.", "warning");
+        return;
+    }
 
-    // 3. Logic based on Evolution API Payload Structure
+    // 3. Logic Mapping
     const eventType = payload.event || payload.type || "unknown";
+    const instance = payload.instance || payload.instanceId || null;
     
     if (eventType === 'messages.upsert') {
         const jid = payload.data?.key?.remoteJid;
         const fromMe = payload.data?.key?.fromMe;
-        // Text can be in conversation OR extendedTextMessage
         const text = payload.data?.message?.conversation || payload.data?.message?.extendedTextMessage?.text;
 
-        if (jid && text && !fromMe) {
-            addSystemLog(`AGENT INPUT: ${text.substring(0, 20)}...`, 'success');
-            handleAIProcess(jid, text);
+        if (fromMe) {
+            addSystemLog("MESSAGE IGNORED: Sent from bot itself", "info");
+            return;
         }
+
+        if (jid && text) {
+            addSystemLog(`MESSAGE RECEIVED: "${text.substring(0, 30)}..." from ${jid}`, 'success');
+            handleAIProcess(jid, text, instance);
+        } else {
+            addSystemLog("MESSAGE IGNORED: No text content or invalid JID", "info");
+        }
+    } else {
+        addSystemLog(`EVENT RECEIVED: ${eventType}`, 'info');
     }
 });
 
@@ -219,7 +247,7 @@ app.get('/api/debug/raw-payloads', (req, res) => res.json(DATA_STORE.raw));
 app.get('/api/config', (req, res) => res.json(runtimeConfig));
 app.post('/api/config/update', (req, res) => {
     Object.assign(runtimeConfig, req.body);
-    addSystemLog("ADMIN: Configuration Synced", "success");
+    addSystemLog("ADMIN: Config Updated", "success");
     res.json({ success: true });
 });
 
@@ -229,8 +257,8 @@ app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n==========================================`);
-    console.log(`ENA COACH MASTER SERVER | PORT: ${PORT}`);
-    console.log(`WEBHOOK URL: https://[YOUR-RENDER-URL]/webhook`);
+    console.log(`ENA COACH MASTER ENGINE ONLINE | PORT: ${PORT}`);
+    console.log(`WEBHOOK: https://[YOUR-RENDER-URL]/webhook`);
     console.log(`==========================================\n`);
     addSystemLog(`ENGINE REBOOTED`, 'success');
 });
