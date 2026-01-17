@@ -64,20 +64,33 @@ const WhatsAppConfig: React.FC = () => {
     setIsSaving(false);
   };
 
-  const simulateTest = async () => {
+  // NEW: Tests the internal /webhook route from the browser
+  const simulateInternalTest = async () => {
       try {
+          const testPayload = {
+              event: "messages.upsert",
+              instance: "internal_test",
+              data: {
+                  key: { remoteJid: "test@s.whatsapp.net", fromMe: false },
+                  message: { conversation: "Hello from Internal Simulator" }
+              }
+          };
+          
           await fetch('/webhook', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'x-test-header': 'Simulated' },
-              body: JSON.stringify({ event: 'test.signal', message: 'Hello from Internal Simulator' })
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(testPayload)
           });
-      } catch (e) {}
+          alert("Simulation Sent! Check the Terminal below.");
+      } catch (e) {
+          alert("Simulation failed: " + e.message);
+      }
   };
 
   return (
     <div className="space-y-8 max-w-6xl mx-auto pb-20">
       
-      {/* Target Info */}
+      {/* Connectivity Status */}
       <div className="bg-white rounded-[2.5rem] shadow-xl border border-gray-100 overflow-hidden">
           <div className="p-10 grid md:grid-cols-2 gap-12">
               <div className="space-y-6">
@@ -92,7 +105,7 @@ const WhatsAppConfig: React.FC = () => {
                   </div>
                   
                   <div className="bg-gray-50 p-6 rounded-3xl border border-gray-100 space-y-4">
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest">Target Webhook URL</label>
+                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest">Evolution Target URL</label>
                       <div className="flex items-center gap-3">
                           <code className="text-xs font-mono bg-white p-3 rounded-xl border border-gray-200 flex-1 break-all">{webhookUrl}</code>
                           <button onClick={() => { navigator.clipboard.writeText(webhookUrl); alert("Copied!"); }} className="bg-gray-900 text-white p-3 rounded-xl hover:bg-black transition">
@@ -100,8 +113,12 @@ const WhatsAppConfig: React.FC = () => {
                           </button>
                       </div>
                   </div>
-                  <button onClick={simulateTest} className="w-full py-4 rounded-2xl border-2 border-dashed border-gray-200 text-gray-400 font-bold text-xs uppercase hover:bg-gray-50 transition">
-                      Run Internal Connectivity Test
+
+                  <button 
+                    onClick={simulateInternalTest}
+                    className="w-full py-4 rounded-2xl border-2 border-dashed border-red-200 text-red-600 font-bold text-xs uppercase hover:bg-red-50 transition"
+                  >
+                    Run Internal Simulation (Verify Terminal)
                   </button>
               </div>
 
@@ -111,9 +128,9 @@ const WhatsAppConfig: React.FC = () => {
                   <div className="flex items-center gap-6">
                       <div className={`w-4 h-4 rounded-full ${lastTraffic ? 'bg-green-500 shadow-[0_0_20px_#22c55e]' : 'bg-gray-800 animate-pulse'}`}></div>
                       <div>
-                          <p className="text-xl font-black">{lastTraffic ? 'Signals Detected' : 'Idle - Waiting for Traffic'}</p>
+                          <p className="text-xl font-black">{lastTraffic ? 'Traffic Detected' : 'Idle - Listening'}</p>
                           <p className="text-xs text-gray-500 font-bold mt-1">
-                              {lastTraffic ? `Last Activity: ${lastTraffic.toLocaleTimeString()}` : 'Verify Evolution API Webhook Config'}
+                              {lastTraffic ? `Last Activity: ${lastTraffic.toLocaleTimeString()}` : 'Awaiting Evolution API packet...'}
                           </p>
                       </div>
                   </div>
@@ -130,59 +147,41 @@ const WhatsAppConfig: React.FC = () => {
               </div>
               <div className="flex gap-2">
                   <button onClick={() => setShowRaw(false)} className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${!showRaw ? 'bg-white text-black shadow-lg' : 'text-gray-500 hover:text-white'}`}>Process Logs</button>
-                  <button onClick={() => setShowRaw(true)} className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${showRaw ? 'bg-red-600 text-white shadow-lg' : 'text-gray-500 hover:text-white'}`}>Raw Signals</button>
+                  <button onClick={() => setShowRaw(true)} className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition ${showRaw ? 'bg-red-600 text-white shadow-lg' : 'text-gray-500 hover:text-white'}`}>Raw Packets</button>
               </div>
           </div>
           
           <div className="flex-1 overflow-y-auto p-8 space-y-6 font-mono scrollbar-hide">
               {showRaw ? (
-                  rawPayloads.length === 0 ? (
-                      <div className="h-full flex items-center justify-center text-gray-700 text-[10px] uppercase font-black tracking-widest">Awaiting raw packets...</div>
-                  ) : (
-                    rawPayloads.map((p, i) => (
+                  rawPayloads.map((p, i) => (
                       <div key={i} className="bg-gray-900/50 p-6 rounded-[2rem] border border-gray-800 animate-fade-in-up space-y-6">
                           <div className="flex justify-between items-center border-b border-gray-800 pb-4">
                               <span className="text-[10px] text-gray-500 font-bold">{new Date(p.timestamp).toLocaleString()}</span>
-                              <span className="text-[10px] text-red-600 uppercase font-black tracking-widest">Inbound Signal</span>
+                              <span className="text-[10px] text-red-600 uppercase font-black tracking-widest">Inbound Header Snapshot</span>
                           </div>
-                          
+                          <pre className="text-blue-400 text-[10px] bg-black/40 p-4 rounded-xl overflow-x-auto">{JSON.stringify(p.headers, null, 2)}</pre>
                           <div className="space-y-2">
-                              <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest">HTTP Headers</p>
-                              <pre className="text-blue-400 text-[10px] bg-black/40 p-4 rounded-xl overflow-x-auto border border-white/5">{JSON.stringify(p.headers, null, 2)}</pre>
-                          </div>
-
-                          <div className="space-y-2">
-                              <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest">Body Payload</p>
-                              <pre className="text-green-500 text-[10px] bg-black/40 p-4 rounded-xl overflow-x-auto border border-white/5">
-                                {typeof p.body === 'string' ? p.body : JSON.stringify(p.body, null, 2)}
-                              </pre>
+                              <p className="text-[9px] text-gray-600 font-black uppercase tracking-widest">Body Data</p>
+                              <pre className="text-green-500 text-[10px] bg-black/40 p-4 rounded-xl overflow-x-auto">{JSON.stringify(p.body, null, 2)}</pre>
                           </div>
                       </div>
-                    ))
-                  )
+                  ))
               ) : (
-                  terminalLogs.length === 0 ? (
-                      <div className="h-full flex items-center justify-center text-gray-700 text-[10px] uppercase font-black tracking-widest">Initializing Terminal...</div>
-                  ) : (
-                    terminalLogs.map((log, i) => (
+                  terminalLogs.map((log, i) => (
                       <div key={i} className={`p-5 rounded-2xl border flex gap-6 items-start transition-all ${log.type === 'error' ? 'bg-red-950/20 border-red-900/40' : log.type === 'success' ? 'bg-green-950/10 border-green-900/30' : 'bg-gray-900/50 border-gray-800'}`}>
                           <span className="text-[10px] text-gray-500 font-black pt-1 whitespace-nowrap">{new Date(log.timestamp).toLocaleTimeString()}</span>
                           <p className={`text-xs font-bold leading-relaxed ${log.type === 'error' ? 'text-red-400' : log.type === 'success' ? 'text-green-400' : 'text-gray-300'}`}>{log.msg}</p>
                       </div>
-                    ))
-                  )
+                  ))
               )}
           </div>
       </div>
 
-      {/* Configuration */}
+      {/* Config Form */}
       <div className="bg-white rounded-[2.5rem] shadow-xl border border-gray-100 p-10">
           <div className="flex justify-between items-center mb-10">
-              <div>
-                  <h2 className="text-xl font-black uppercase tracking-widest">Engine Parameters</h2>
-                  <p className="text-[10px] text-gray-400 font-bold uppercase mt-1">Configure API Endpoints & Auth</p>
-              </div>
-              <button onClick={handleSave} disabled={isSaving} className="bg-red-600 text-white px-10 py-5 rounded-2xl font-black text-xs uppercase hover:bg-red-700 transition shadow-lg active:scale-95">
+              <h2 className="text-xl font-black uppercase tracking-widest">Parameters</h2>
+              <button onClick={handleSave} disabled={isSaving} className="bg-red-600 text-white px-10 py-5 rounded-2xl font-black text-xs uppercase hover:bg-red-700 transition shadow-lg">
                   {isSaving ? <i className="fas fa-sync fa-spin"></i> : 'Sync Settings'}
               </button>
           </div>
